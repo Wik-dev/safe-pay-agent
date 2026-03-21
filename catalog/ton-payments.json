@@ -1,0 +1,69 @@
+{
+  "templates": {
+    "ton_escrow": {
+      "description": "Deploy a TON escrow contract and deposit funds. Creates a new SafePayment contract with specified recipient and condition, then deposits the specified amount.",
+      "persistent": false,
+      "docker_image": "ton-worker",
+      "command_template": "node /app/scripts/ton_escrow.js",
+      "parameter_schema": {
+        "type": "object",
+        "properties": {
+          "recipient": {"type": "string", "description": "TON address of the payment recipient"},
+          "amount": {"type": "string", "description": "Amount in TON to deposit (e.g. '0.5')"},
+          "condition": {"type": "string", "description": "Human-readable condition for releasing the payment"}
+        },
+        "required": ["recipient", "amount", "condition"]
+      },
+      "approval_tier": "human-confirm",
+      "timeout": 120,
+      "rate_limit": 3,
+      "secret_refs": ["TON_MNEMONIC", "TON_API_ENDPOINT"],
+      "network_policy": {
+        "egress_whitelist": ["testnet.toncenter.com", "toncenter.com"]
+      }
+    },
+    "ton_release": {
+      "description": "Release escrowed funds to the recipient. Sends the Release message to an existing SafePayment contract, transferring all funds to the designated recipient.",
+      "persistent": false,
+      "docker_image": "ton-worker",
+      "command_template": "node /app/scripts/ton_release.js",
+      "parameter_schema": {
+        "type": "object",
+        "properties": {
+          "contract_address": {"type": "string", "description": "Address of the deployed SafePayment contract"}
+        },
+        "required": ["contract_address"]
+      },
+      "approval_tier": "human-confirm",
+      "timeout": 120,
+      "rate_limit": 5,
+      "secret_refs": ["TON_MNEMONIC", "TON_API_ENDPOINT"],
+      "network_policy": {
+        "egress_whitelist": ["testnet.toncenter.com", "toncenter.com"]
+      }
+    },
+    "ton_refund": {
+      "description": "Refund escrowed funds back to the owner. Sends the Refund message to an existing SafePayment contract, returning all funds to the contract owner.",
+      "persistent": false,
+      "docker_image": "ton-worker",
+      "command_template": "node /app/scripts/ton_refund.js",
+      "parameter_schema": {
+        "type": "object",
+        "properties": {
+          "contract_address": {"type": "string", "description": "Address of the deployed SafePayment contract"}
+        },
+        "required": ["contract_address"]
+      },
+      "approval_tier": "human-confirm",
+      "timeout": 120,
+      "rate_limit": 5,
+      "secret_refs": ["TON_MNEMONIC", "TON_API_ENDPOINT"],
+      "network_policy": {
+        "egress_whitelist": ["testnet.toncenter.com", "toncenter.com"]
+      }
+    }
+  },
+  "images": {
+    "ton-worker": "safe-pay-ton-worker:latest"
+  }
+}
