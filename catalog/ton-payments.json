@@ -4,7 +4,7 @@
       "description": "Deploy a TON escrow contract and deposit funds. Creates a new SafePayment contract with specified recipient and condition, then deposits the specified amount.",
       "persistent": false,
       "docker_image": "ton-worker",
-      "command_template": "node /app/scripts/ton_escrow.js",
+      "command_template": "node /app/dist/ton_escrow.js",
       "parameter_schema": {
         "type": "object",
         "properties": {
@@ -17,7 +17,7 @@
       "approval_tier": "human-confirm",
       "timeout": 120,
       "rate_limit": 3,
-      "secret_refs": ["TON_MNEMONIC", "TON_API_ENDPOINT"],
+      "secret_refs": ["TON_MNEMONIC", "TON_API_ENDPOINT", "TON_API_KEY"],
       "network_policy": {
         "egress_whitelist": ["testnet.toncenter.com", "toncenter.com"]
       }
@@ -26,7 +26,7 @@
       "description": "Release escrowed funds to the recipient. Sends the Release message to an existing SafePayment contract, transferring all funds to the designated recipient.",
       "persistent": false,
       "docker_image": "ton-worker",
-      "command_template": "node /app/scripts/ton_release.js",
+      "command_template": "node /app/dist/ton_release.js",
       "parameter_schema": {
         "type": "object",
         "properties": {
@@ -37,7 +37,7 @@
       "approval_tier": "human-confirm",
       "timeout": 120,
       "rate_limit": 5,
-      "secret_refs": ["TON_MNEMONIC", "TON_API_ENDPOINT"],
+      "secret_refs": ["TON_MNEMONIC", "TON_API_ENDPOINT", "TON_API_KEY"],
       "network_policy": {
         "egress_whitelist": ["testnet.toncenter.com", "toncenter.com"]
       }
@@ -46,7 +46,7 @@
       "description": "Refund escrowed funds back to the owner. Sends the Refund message to an existing SafePayment contract, returning all funds to the contract owner.",
       "persistent": false,
       "docker_image": "ton-worker",
-      "command_template": "node /app/scripts/ton_refund.js",
+      "command_template": "node /app/dist/ton_refund.js",
       "parameter_schema": {
         "type": "object",
         "properties": {
@@ -57,7 +57,7 @@
       "approval_tier": "human-confirm",
       "timeout": 120,
       "rate_limit": 5,
-      "secret_refs": ["TON_MNEMONIC", "TON_API_ENDPOINT"],
+      "secret_refs": ["TON_MNEMONIC", "TON_API_ENDPOINT", "TON_API_KEY"],
       "network_policy": {
         "egress_whitelist": ["testnet.toncenter.com", "toncenter.com"]
       }

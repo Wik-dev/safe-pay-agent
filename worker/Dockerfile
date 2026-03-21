@@ -21,7 +21,7 @@ WORKDIR /app
 COPY --from=builder /app/package.json /app/package-lock.json* ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
-COPY --from=builder /app/dist/ ./scripts/
+COPY --from=builder /app/dist/ ./dist/
 
 RUN chown -R worker:worker /app
 
