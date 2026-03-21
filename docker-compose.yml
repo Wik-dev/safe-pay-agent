@@ -1,0 +1,49 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: validance
+      POSTGRES_USER: validance
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-validance_dev}
+    ports:
+      - "5434:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U validance"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  validance:
+    image: validance-engine:latest
+    ports:
+      - "7500:8000"
+    environment:
+      DATABASE_URL: postgresql://validance:${POSTGRES_PASSWORD:-validance_dev}@postgres:5432/validance
+      CATALOG_PATH: /app/catalog/ton-payments.json
+      DOCKER_HOST: unix:///var/run/docker.sock
+      # Secrets passed to worker containers
+      TON_MNEMONIC: ${TON_MNEMONIC}
+      TON_API_ENDPOINT: ${TON_API_ENDPOINT:-https://testnet.toncenter.com/api/v2/jsonRPC}
+      TON_API_KEY: ${TON_API_KEY:-}
+    volumes:
+      - ./catalog/ton-payments.json:/app/catalog/ton-payments.json:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - workdir:/work
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Build-only service — not started, just builds the image
+  ton-worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    image: safe-pay-ton-worker:latest
+    profiles:
+      - build
+
+volumes:
+  pgdata:
+  workdir:
