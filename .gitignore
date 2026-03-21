@@ -1,0 +1,11 @@
+node_modules/
+dist/
+build/
+temp/
+.env
+.env.secrets
+*.js
+*.d.ts
+*.map
+!blueprint.config.ts
+!jest.config.ts
