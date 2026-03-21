@@ -48,7 +48,8 @@ Contract on testnet: [`EQDnAviCiYQKc72vNg4JA9Z4xX5wOieF0PB2oDtWfEYflep_`](https:
 git clone https://github.com/Wik-dev/safe-pay-agent && cd safe-pay-agent
 npm install && npx blueprint build SafePayment
 docker compose --profile build build ton-worker && docker compose up -d validance postgres
-cd telegram-bot && npm install && cp .env.example .env  # add TELEGRAM_BOT_TOKEN + ANTHROPIC_API_KEY
+cd telegram-bot && npm install && cp .env.example .env
+# Set TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY, and VALIDANCE_URL (default: http://localhost:7500)
 npx tsx --env-file=.env src/index.ts
 ```
 
