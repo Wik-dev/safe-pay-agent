@@ -1,155 +1,71 @@
-# Safe AI Payment Agent
+# Safe Pay Agent
 
-AI-proposed payments validated by [Validance](https://validance.io), executed on TON blockchain.
+**AI payment agent on Telegram that validates every transaction through a safety engine before executing on TON.**
 
-**BSA-EPFL Stablecoins & Payments Hackathon — AlphaTON Capital Track**
+## Problem
+
+AI agents are getting access to money. They make mistakes — wrong amount, wrong recipient, no recourse. There's no safety layer between AI intent and on-chain execution.
+
+## Solution
+
+User chats naturally in Telegram. AI proposes the payment. [Validance](https://validance.io) validates, requires human approval, then executes an escrow contract on TON. The AI can propose but cannot execute without approval.
 
 ## Architecture
 
 ```
-┌─────────────────────────┐
-│  AI Agent (Layer 1+)    │
-│  "Pay 0.5 TON to EQ..." │
-└────────┬────────────────┘
-         │ POST /api/proposals
-┌────────▼────────────────┐
-│  Validance Engine       │
-│  ├─ Catalog match       │
-│  ├─ Rate limit (3/hr)   │
-│  ├─ Human approval gate │
-│  └─ Secret injection    │
-└────────┬────────────────┘
-         │ approved → spawn container
-┌────────▼────────────────┐
-│  TON Worker Container   │
-│  ├─ Derive wallet       │
-│  ├─ Deploy escrow       │
-│  └─ Return result       │
-└────────┬────────────────┘
-         │ on-chain tx
-┌────────▼────────────────┐
-│  TON Blockchain         │
-│  SafePayment contract   │
-│  (escrow → release/     │
-│   refund)               │
-└─────────────────────────┘
+Telegram User
+    ↓ "Send 0.5 TON to EQ... for coffee"
+Grammy Bot + Claude AI
+    ↓ extracts intent → structured proposal
+Validance Engine
+    ├─ Catalog match (only allowed actions)
+    ├─ Rate limit (3 deployments/hr)
+    ├─ Human approval gate ← [Approve] [Deny]
+    └─ Secret isolation (mnemonic never exposed to AI)
+    ↓ approved → spawn isolated container
+TON Blockchain
+    └─ SafePayment escrow contract (deploy / release / refund)
 ```
 
-## Why Validance?
+## Full Escrow Lifecycle
 
-Without Validance, an AI agent with wallet access can drain funds instantly. Validance adds:
+> "Send 0.05 TON to EQ... for hackathon demo"
 
-- **Human approval** — every payment requires explicit confirmation
-- **Rate limiting** — max 3 escrow deployments per hour
-- **Secret isolation** — wallet mnemonic never exposed to the AI
-- **Audit trail** — every proposal logged with decision + outcome
-- **Catalog enforcement** — AI can only call pre-defined actions
+| Step | Screenshot |
+|------|-----------|
+| 1. AI parses intent, asks approval | ![](docs/1-approve.png) |
+| 2. Contract deployed on TON | ![](docs/2-deployed.png) |
+| 3. User releases funds | ![](docs/3-release.png) |
+| 4. Funds sent to recipient | ![](docs/4-released.png) |
 
-## Quick Start
+*"Release the hackathon demo escrow" — the AI remembers the contract from context and routes the release to the correct address. That's the intelligence layer, not just a form.*
+
+Contract on testnet: [`EQDnAviCiYQKc72vNg4JA9Z4xX5wOieF0PB2oDtWfEYflep_`](https://testnet.tonscan.org/address/EQDnAviCiYQKc72vNg4JA9Z4xX5wOieF0PB2oDtWfEYflep_)
+
+## How to Run
 
 ```bash
-# 1. Install & build contract
-npm install
-npx blueprint build SafePayment
-
-# 2. Run contract tests
-npx jest
-
-# 3. Copy wrapper for worker
-npm run copy-wrapper
-
-# 4. Configure secrets
-cp .env.example .env.secrets
-# Edit .env.secrets with your testnet mnemonic
-
-# 5. Build worker image & start
-docker compose --profile build build ton-worker
-docker compose up -d validance postgres
+git clone https://github.com/Wik-dev/safe-pay-agent && cd safe-pay-agent
+npm install && npx blueprint build SafePayment
+docker compose --profile build build ton-worker && docker compose up -d validance postgres
+cd telegram-bot && npm install && cp .env.example .env  # add TELEGRAM_BOT_TOKEN + ANTHROPIC_API_KEY
+npx tsx --env-file=.env src/index.ts
 ```
 
-## Demo Flow (curl)
+## E2E Tests (no Telegram needed)
 
 ```bash
-# Health check
-curl -s http://localhost:7500/api/health
-
-# Submit escrow proposal (blocks on approval)
-curl -X POST http://localhost:7500/api/proposals \
-  -H "Content-Type: application/json" \
-  -d '{
-    "action": "ton_escrow",
-    "parameters": {
-      "recipient": "EQD...",
-      "amount": "0.1",
-      "condition": "hackathon demo"
-    },
-    "session_hash": "demo001"
-  }' &
-
-# Check pending approvals
-curl -s http://localhost:7500/api/approvals/pending
-
-# Approve (replace {id} with actual approval ID)
-curl -X POST http://localhost:7500/api/approvals/{id}/resolve \
-  -H "Content-Type: application/json" \
-  -d '{"decision": "approved"}'
-
-# Result: {"status":"completed","result":{"output":"{\"contract_address\":\"EQ...\"}"}}
+cd telegram-bot && npx tsx --env-file=.env tests/test_e2e.ts
+# 24 tests: keyword filter, Claude extraction, deploy+approve, deny flow
 ```
 
-## Smart Contract
+## Tech Stack
 
-`contracts/safe_payment.tact` — minimal escrow:
+Tact + Blueprint (smart contract) · Grammy (Telegram bot) · Claude Sonnet (intent extraction) · Validance (validated execution engine) · TON testnet
 
-| Message | Who | Effect |
-|---------|-----|--------|
-| _(empty)_ | Anyone | Deploy + deposit TON |
-| `"deposit"` | Anyone | Add more TON |
-| `Release` | Owner only | Send all funds to recipient, self-destruct |
-| `Refund` | Owner only | Send all funds back to owner, self-destruct |
+## What's Next
 
-## Validance Catalog
-
-3 templates in `catalog/ton-payments.json`:
-
-| Template | Approval | Rate Limit | Description |
-|----------|----------|------------|-------------|
-| `ton_escrow` | human-confirm | 3/hour | Deploy contract + deposit |
-| `ton_release` | human-confirm | 5/hour | Release funds to recipient |
-| `ton_refund` | human-confirm | 5/hour | Refund funds to owner |
-
-## Project Structure
-
-```
-safe-pay-agent/
-├── contracts/safe_payment.tact    # Tact escrow contract
-├── tests/SafePayment.spec.ts      # Sandbox tests (5 cases)
-├── wrappers/SafePayment.ts        # Blueprint wrapper
-├── scripts/deploySafePayment.ts   # Testnet deployment
-├── worker/                        # Validance container image
-│   ├── Dockerfile
-│   ├── scripts/
-│   │   ├── lib/client.ts          # TonClient factory
-│   │   ├── lib/wallet.ts          # Wallet-from-mnemonic
-│   │   ├── ton_escrow.ts          # Deploy + deposit
-│   │   ├── ton_release.ts         # Release to recipient
-│   │   └── ton_refund.ts          # Refund to owner
-│   └── package.json
-├── catalog/ton-payments.json      # Validance catalog
-├── docker-compose.yml             # Engine + DB + worker
-└── README.md
-```
-
-## Layered Strategy
-
-| Layer | Component | Status |
-|-------|-----------|--------|
-| 0 | TON contract + Validance integration | **This repo** |
-| 1 | Telegram bot + AI agent | Next |
-| 2 | SafeClaw plugin integration | Future |
-| 3 | OpenClaw full assistant | Future |
-
-Each layer is additive — Layer 0 is fully functional standalone via curl/API.
+The safety engine is generic — same approval gates, rate limits, and audit trails scale to any complexity. Recurring payments, multi-step workflows, spending limits, multi-sig approval chains. Same engine, same safety, any complexity.
 
 ## License
 
