@@ -24,7 +24,12 @@ export interface ConversationalResponse {
   text: string;
 }
 
-export type IntentResult = PaymentIntent | ConversationalResponse;
+export interface MultiToolCall {
+  type: "multi_tool_call";
+  intents: PaymentIntent[];
+}
+
+export type IntentResult = PaymentIntent | ConversationalResponse | MultiToolCall;
 
 let catalog: Catalog;
 let tools: Anthropic.Messages.Tool[];
@@ -72,9 +77,16 @@ export async function extractIntent(
     max_tokens: 1024,
     system: catalog.buildSystemPrompt(activeResults),
     tools,
+    tool_choice: { type: "auto", disable_parallel_tool_use: false },
     messages,
   });
 
+  // Debug: log what the API returned
+  const blockTypes = response.content.map((b) => b.type);
+  console.log(`[ai] Response: stop_reason=${response.stop_reason}, blocks=${JSON.stringify(blockTypes)}`);
+
+  // Collect all tool_use blocks into PaymentIntents
+  const intents: PaymentIntent[] = [];
   for (const block of response.content) {
     if (block.type === "tool_use") {
       const action = block.name;
@@ -82,12 +94,19 @@ export async function extractIntent(
 
       const params = block.input as Record<string, unknown>;
       const summary = catalog.formatSummary(action, params);
-
-      // Record the tool call as an assistant message
-      addChatMessage(chatId, "assistant", summary);
-
-      return { type: "tool_call", action, params, summary };
+      intents.push({ type: "tool_call", action, params, summary });
     }
+  }
+
+  if (intents.length === 1) {
+    addChatMessage(chatId, "assistant", intents[0].summary);
+    return intents[0];
+  }
+
+  if (intents.length > 1) {
+    const combined = intents.map((i) => i.summary).join("\n");
+    addChatMessage(chatId, "assistant", combined);
+    return { type: "multi_tool_call", intents };
   }
 
   const textBlocks = response.content.filter(

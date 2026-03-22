@@ -5,7 +5,7 @@
 import { Bot, InlineKeyboard } from "grammy";
 import crypto from "node:crypto";
 import type { Catalog } from "./catalog.js";
-import { extractIntent, hasPaymentSignals, recordToolResult } from "./ai.js";
+import { extractIntent, hasPaymentSignals, recordToolResult, type PaymentIntent } from "./ai.js";
 import { ValidanceClient, type ProposalRequest } from "./validance.js";
 import {
   addResult,
@@ -115,42 +115,31 @@ export function createBot(
         return;
       }
 
-      // Action intent — submit to Validance
-      const proposalId = crypto.randomUUID();
-      const notifyUrl = `http://${webhookHost}:${webhookPort}/webhook?proposalId=${proposalId}`;
+      if (intent.type === "multi_tool_call") {
+        // Multiple actions — edit placeholder with overview, then send individual messages
+        await bot.api.editMessageText(
+          chatId,
+          placeholder.message_id,
+          `${intent.intents.length} actions queued — sending approval requests...`
+        );
 
-      const request: ProposalRequest = {
-        action: intent.action,
-        parameters: intent.params,
-        session_hash: sessionHash(chatId),
-        notify_url: notifyUrl,
-      };
+        for (const sub of intent.intents) {
+          const msg = await bot.api.sendMessage(
+            chatId,
+            `${sub.summary}\n\nSubmitting to Validance...`
+          );
+          submitProposal(chatId, msg.message_id, sub, sessionHash(chatId));
+        }
+        return;
+      }
 
+      // Single action intent — submit to Validance
       await bot.api.editMessageText(
         chatId,
         placeholder.message_id,
         `${intent.summary}\n\nSubmitting to Validance...`
       );
-
-      // Fire proposal in background (don't await — it blocks until approval + execution)
-      const promise = validance.submitProposal(request);
-
-      addPending(proposalId, {
-        chatId,
-        messageId: placeholder.message_id,
-        promise,
-        approvalId: null,
-        action: intent.action,
-        params: intent.params,
-        createdAt: Date.now(),
-      });
-
-      // Handle promise resolution (runs after approval + execution)
-      promise
-        .then((result) =>
-          handleProposalResult(bot, proposalId, result, catalog)
-        )
-        .catch((err) => handleProposalError(bot, proposalId, err));
+      submitProposal(chatId, placeholder.message_id, intent, sessionHash(chatId));
     } catch (err) {
       console.error("[bot] Error processing message:", err);
       await bot.api.editMessageText(
@@ -246,6 +235,43 @@ export function createBot(
         console.error("[bot] Failed to show approval buttons:", err);
       });
   };
+
+  // --- Proposal submission helper ---
+
+  function submitProposal(
+    chatId: number,
+    messageId: number,
+    intent: PaymentIntent,
+    session: string
+  ): void {
+    const proposalId = crypto.randomUUID();
+    const notifyUrl = `http://${webhookHost}:${webhookPort}/webhook?proposalId=${proposalId}`;
+
+    const request: ProposalRequest = {
+      action: intent.action,
+      parameters: intent.params,
+      session_hash: session,
+      notify_url: notifyUrl,
+    };
+
+    const promise = validance.submitProposal(request);
+
+    addPending(proposalId, {
+      chatId,
+      messageId,
+      promise,
+      approvalId: null,
+      action: intent.action,
+      params: intent.params,
+      createdAt: Date.now(),
+    });
+
+    promise
+      .then((result) =>
+        handleProposalResult(bot, proposalId, result, catalog)
+      )
+      .catch((err) => handleProposalError(bot, proposalId, err));
+  }
 
   return { bot, onApprovalReady };
 }
