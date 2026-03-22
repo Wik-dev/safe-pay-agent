@@ -1,7 +1,9 @@
 /**
- * Entry point: start bot + webhook server.
+ * Entry point: load catalog, start bot + webhook server.
  */
 
+import { Catalog } from "./catalog.js";
+import { initAI } from "./ai.js";
 import { ValidanceClient } from "./validance.js";
 import { createWebhookServer } from "./webhook.js";
 import { createBot } from "./bot.js";
@@ -24,6 +26,13 @@ async function main(): Promise<void> {
   // ANTHROPIC_API_KEY is read by the SDK from env automatically
   required("ANTHROPIC_API_KEY");
 
+  // Load catalog and initialize AI layer
+  const catalog = Catalog.load();
+  console.log(
+    `[ok] Catalog loaded: ${catalog.actions.length} actions (${catalog.actions.join(", ")})`
+  );
+  initAI(catalog);
+
   // Validance health check
   const validance = new ValidanceClient(validanceUrl);
   const healthy = await validance.healthCheck();
@@ -40,7 +49,8 @@ async function main(): Promise<void> {
     telegramToken,
     validance,
     webhookHost,
-    webhookPort
+    webhookPort,
+    catalog
   );
 
   // Start webhook server

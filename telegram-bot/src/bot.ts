@@ -4,39 +4,43 @@
 
 import { Bot, InlineKeyboard } from "grammy";
 import crypto from "node:crypto";
-import { extractIntent, hasPaymentSignals } from "./ai.js";
+import type { Catalog } from "./catalog.js";
+import { extractIntent, hasPaymentSignals, recordToolResult, type PaymentIntent } from "./ai.js";
 import { ValidanceClient, type ProposalRequest } from "./validance.js";
 import {
-  addContract,
+  addResult,
   addPending,
-  getActiveContracts,
-  getAllContracts,
+  getActiveResults,
+  getAllResults,
+  getChatHistory,
   pendingProposals,
-  updateContractStatus,
+  updateResult,
   type ProposalResult,
 } from "./store.js";
 import {
   formatApprovalRequest,
-  formatContractList,
+  formatResultHistory,
   formatError,
   formatResult,
+  markdownToTelegramHtml,
 } from "./format.js";
 import type { OnApprovalReady } from "./webhook.js";
 
-const CANNED_RESPONSE = `I'm Safe Pay Agent — I help you make escrow payments on TON testnet.
+const CANNED_RESPONSE = `I'm Safe Pay Agent — I help you execute validated actions.
 
 Try something like:
-• "Send 0.5 TON to EQ... for coffee delivery"
-• "Release the coffee escrow"
-• "Refund my last payment"
+\u2022 "Send 0.5 TON to EQ... for coffee delivery"
+\u2022 "Release the coffee escrow"
+\u2022 "Check balance of EQ..."
 
-Or use /contracts to see your active escrows.`;
+Or use /results to see your history.`;
 
 export function createBot(
   token: string,
   validance: ValidanceClient,
   webhookHost: string,
-  webhookPort: number
+  webhookPort: number,
+  catalog: Catalog
 ): { bot: Bot; onApprovalReady: OnApprovalReady } {
   const bot = new Bot(token);
 
@@ -52,19 +56,185 @@ export function createBot(
 
   bot.command("start", async (ctx) => {
     await ctx.reply(
-      `<b>Safe Pay Agent</b>\n\nI help you create and manage escrow payments on TON testnet.\n\nJust describe your payment in natural language, and I'll handle the rest.\n\n<b>Commands:</b>\n/contracts — List your escrows\n/help — How to use me`,
+      `<b>Safe Pay Agent</b>\n\nI help you execute validated actions via natural language.\n\nJust describe what you want to do, and I'll handle the rest.\n\n<b>Commands:</b>\n/results \u2014 List your results\n/help \u2014 How to use me`,
       { parse_mode: "HTML" }
     );
   });
 
   bot.command("contracts", async (ctx) => {
-    const contracts = getAllContracts(ctx.chat.id);
-    await ctx.reply(formatContractList(contracts), { parse_mode: "HTML" });
+    const results = getAllResults(ctx.chat.id);
+    await ctx.reply(formatResultHistory(results, catalog), {
+      parse_mode: "HTML",
+    });
+  });
+
+  bot.command("results", async (ctx) => {
+    const results = getAllResults(ctx.chat.id);
+    await ctx.reply(formatResultHistory(results, catalog), {
+      parse_mode: "HTML",
+    });
   });
 
   bot.command("help", async (ctx) => {
     await ctx.reply(
-      `<b>How to use Safe Pay Agent</b>\n\n<b>Create an escrow:</b>\n"Send 0.5 TON to EQ... for coffee delivery"\n\n<b>Release funds:</b>\n"Release the coffee escrow"\n\n<b>Refund:</b>\n"Refund the payment to EQ..."\n\nAll payments require your explicit approval before executing on-chain.`,
+      `<b>How to use Safe Pay Agent</b>\n\nDescribe your action in natural language. I'll extract the intent, show you a confirmation, and execute it through Validance.\n\nAll actions requiring approval will show Approve/Deny buttons before executing.\n\n<b>Commands:</b>\n/status \u2014 Engine health + catalog summary\n/audit \u2014 Your audit trail\n/contracts \u2014 Active contracts\n/policies \u2014 Learned policy rules\n/catalog \u2014 Available actions + safety config\n/results \u2014 Result history`,
+      { parse_mode: "HTML" }
+    );
+  });
+
+  // --- Validance introspection commands ---
+
+  bot.command("status", async (ctx) => {
+    try {
+      const health = await validance.getHealth();
+      const dbStatus = health.database === "healthy" ? "connected" : health.database;
+      const actionCount = catalog.actions.length;
+
+      const actionLines = catalog.actions.map((name) => {
+        const tpl = catalog.template(name)!;
+        const tier = tpl.approval_tier;
+        const rate = tpl.rate_limit ? `${tpl.rate_limit}/hr` : "unlimited";
+        return `  <code>${escapeCmd(name)}</code>  \u2014 ${escapeCmd(tier)} (${rate})`;
+      });
+
+      await ctx.reply(
+        `\ud83d\udfe2 <b>Validance Engine:</b> ${escapeCmd(health.status)}\n<b>Database:</b> ${escapeCmd(dbStatus)}\n<b>Catalog:</b> ${actionCount} actions loaded\n\n<b>Actions:</b>\n${actionLines.join("\n")}`,
+        { parse_mode: "HTML" }
+      );
+    } catch {
+      await ctx.reply("\u26a0\ufe0f Validance engine not reachable");
+    }
+  });
+
+  bot.command("audit", async (ctx) => {
+    try {
+      const session = sessionHash(ctx.chat.id);
+      const entityId = `proposal_${session.slice(0, 8)}`;
+      const audit = await validance.getAuditTrail(entityId);
+
+      if (audit.total_events === 0) {
+        await ctx.reply(
+          `\ud83d\udccb <b>Audit Trail</b> (session: <code>${session.slice(0, 8)}...</code>)\n\nNo audit events found.`,
+          { parse_mode: "HTML" }
+        );
+        return;
+      }
+
+      // Filter to last 24h and limit display
+      const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+      const recent = audit.events.filter(
+        (e) => e.timestamp && new Date(e.timestamp).getTime() > cutoff
+      );
+
+      if (recent.length === 0) {
+        await ctx.reply(
+          `\ud83d\udccb <b>Audit Trail</b> (session: <code>${session.slice(0, 8)}...</code>)\n\n${audit.total_events} events total, but none in the last 24h.`,
+          { parse_mode: "HTML" }
+        );
+        return;
+      }
+
+      const lines = recent.slice(-15).map((e, i) => {
+        const time = e.timestamp
+          ? new Date(e.timestamp).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
+          : "??:??";
+        let detail = "";
+        if (e.details) {
+          const d = e.details;
+          if (d.template_name) detail += `\n   ${escapeCmd(String(d.template_name))}`;
+          if (d.decision) detail += `\n   decided_by: ${escapeCmd(String(d.decided_by ?? "user"))}`;
+        }
+        if (e.event_hash) {
+          const prev = e.previous_entity_hash?.slice(0, 4) ?? "0000";
+          detail += `\n   hash: <code>${prev}\u2192${e.event_hash.slice(0, 4)}</code>`;
+        }
+        return `${i + 1}. [${time}] <b>${escapeCmd(e.event_type)}</b>${detail}`;
+      });
+
+      await ctx.reply(
+        `\ud83d\udccb <b>Audit Trail</b> (session: <code>${session.slice(0, 8)}...</code>)\n\n${lines.join("\n\n")}\n\nNo events older than 24h shown.`,
+        { parse_mode: "HTML" }
+      );
+    } catch {
+      await ctx.reply("\u26a0\ufe0f Validance engine not reachable");
+    }
+  });
+
+  bot.command("policies", async (ctx) => {
+    try {
+      const session = sessionHash(ctx.chat.id);
+      const policies = await validance.getPolicies(session);
+
+      if (policies.rules.length === 0) {
+        await ctx.reply(
+          `\ud83d\udee1\ufe0f <b>Learned Policies</b>\n\nNo learned rules yet.\nApprove an action with "remember" to create rules.`,
+          { parse_mode: "HTML" }
+        );
+        return;
+      }
+
+      const lines = policies.rules.map((r, i) => {
+        const pattern = Object.keys(r.match_pattern).length > 0
+          ? `\n   Pattern: ${escapeCmd(JSON.stringify(r.match_pattern))}`
+          : "";
+        let expiry = "";
+        if (r.expires_at) {
+          const days = Math.ceil(
+            (new Date(r.expires_at).getTime() - Date.now()) / (1000 * 60 * 60 * 24)
+          );
+          expiry = ` (expires in ${days}d)`;
+        }
+        const source = r.approval_id ? `\n   Created from: approval #${escapeCmd(r.approval_id)}` : "";
+        return `${i + 1}. <b>${escapeCmd(r.template_name)}:</b> ${escapeCmd(r.scope)}${expiry}${pattern}${source}`;
+      });
+
+      await ctx.reply(
+        `\ud83d\udee1\ufe0f <b>Learned Policies</b>\n\n${lines.join("\n\n")}`,
+        { parse_mode: "HTML" }
+      );
+    } catch {
+      await ctx.reply("\u26a0\ufe0f Validance engine not reachable");
+    }
+  });
+
+  bot.command("reset_policies", async (ctx) => {
+    try {
+      const session = sessionHash(ctx.chat.id);
+      const policies = await validance.getPolicies(session);
+
+      if (policies.rules.length === 0) {
+        await ctx.reply("No learned policies to reset.");
+        return;
+      }
+
+      let deleted = 0;
+      for (const rule of policies.rules) {
+        await validance.deletePolicy(rule.rule_id);
+        deleted++;
+      }
+
+      await ctx.reply(
+        `\ud83d\udee1\ufe0f Cleared ${deleted} learned policy rule${deleted > 1 ? "s" : ""}.`,
+        { parse_mode: "HTML" }
+      );
+    } catch {
+      await ctx.reply("\u26a0\ufe0f Validance engine not reachable");
+    }
+  });
+
+  bot.command("catalog", async (ctx) => {
+    const lines = catalog.actions.map((name) => {
+      const tpl = catalog.template(name)!;
+      const tier = tpl.approval_tier;
+      const rate = tpl.rate_limit ? `${tpl.rate_limit}/hr` : "unlimited";
+      const secrets = (tpl as Record<string, unknown>).secret_refs;
+      const secretCount = Array.isArray(secrets) ? secrets.length : 0;
+      const secretInfo = secretCount > 0 ? ` | Secrets: ${secretCount}` : "";
+      return `<b>${escapeCmd(name)}</b>\n  Tier: ${escapeCmd(tier)} | Rate: ${rate}${secretInfo}\n  ${escapeCmd(tpl.description)}`;
+    });
+
+    await ctx.reply(
+      `\ud83d\udcd6 <b>Action Catalog</b>\n\n${lines.join("\n\n")}`,
       { parse_mode: "HTML" }
     );
   });
@@ -78,8 +248,9 @@ export function createBot(
     // Skip commands (already handled above)
     if (text.startsWith("/")) return;
 
-    // Keyword pre-filter: no payment signals → instant canned response
-    if (!hasPaymentSignals(text)) {
+    // Keyword pre-filter: no signals, no history, not a question → canned response
+    const hasHistory = getChatHistory(chatId).length > 0;
+    if (!hasPaymentSignals(text) && !hasHistory && !text.includes("?")) {
       await ctx.reply(CANNED_RESPONSE, { parse_mode: "HTML" });
       return;
     }
@@ -88,52 +259,44 @@ export function createBot(
     const placeholder = await ctx.reply("Processing...");
 
     try {
-      const activeContracts = getActiveContracts(chatId);
-      const intent = await extractIntent(text, activeContracts);
+      const activeResults = getActiveResults(chatId, catalog);
+      const intent = await extractIntent(chatId, text, activeResults);
 
       if (intent.type === "text") {
         await bot.api.editMessageText(
           chatId,
           placeholder.message_id,
-          intent.text
+          markdownToTelegramHtml(intent.text),
+          { parse_mode: "HTML" }
         );
         return;
       }
 
-      // Payment intent — submit to Validance
-      const proposalId = crypto.randomUUID();
-      const notifyUrl = `http://${webhookHost}:${webhookPort}/webhook?proposalId=${proposalId}`;
+      if (intent.type === "multi_tool_call") {
+        // Multiple actions — edit placeholder with overview, then send individual messages
+        await bot.api.editMessageText(
+          chatId,
+          placeholder.message_id,
+          `${intent.intents.length} actions queued — sending approval requests...`
+        );
 
-      const request: ProposalRequest = {
-        action: intent.action,
-        parameters: intent.params,
-        session_hash: sessionHash(chatId),
-        notify_url: notifyUrl,
-      };
+        for (const sub of intent.intents) {
+          const msg = await bot.api.sendMessage(
+            chatId,
+            `${sub.summary}\n\nSubmitting to Validance...`
+          );
+          submitProposal(chatId, msg.message_id, sub, sessionHash(chatId));
+        }
+        return;
+      }
 
+      // Single action intent — submit to Validance
       await bot.api.editMessageText(
         chatId,
         placeholder.message_id,
         `${intent.summary}\n\nSubmitting to Validance...`
       );
-
-      // Fire proposal in background (don't await — it blocks until approval + execution)
-      const promise = validance.submitProposal(request);
-
-      addPending(proposalId, {
-        chatId,
-        messageId: placeholder.message_id,
-        promise,
-        approvalId: null,
-        action: intent.action,
-        params: intent.params,
-        createdAt: Date.now(),
-      });
-
-      // Handle promise resolution (runs after approval + execution)
-      promise
-        .then((result) => handleProposalResult(bot, proposalId, result))
-        .catch((err) => handleProposalError(bot, proposalId, err));
+      submitProposal(chatId, placeholder.message_id, intent, sessionHash(chatId));
     } catch (err) {
       console.error("[bot] Error processing message:", err);
       await bot.api.editMessageText(
@@ -144,12 +307,12 @@ export function createBot(
     }
   });
 
-  // --- Callback query handler (Approve/Deny buttons) ---
+  // --- Callback query handler (Approve/Deny/Remember buttons) ---
 
   bot.on("callback_query:data", async (ctx) => {
     const data = ctx.callbackQuery.data;
     const [decision, proposalId] = data.split(":");
-    if (!proposalId || (decision !== "approve" && decision !== "deny")) {
+    if (!proposalId || !["approve", "deny", "remember"].includes(decision)) {
       await ctx.answerCallbackQuery({ text: "Invalid action" });
       return;
     }
@@ -168,27 +331,36 @@ export function createBot(
     }
 
     try {
-      const resolution = decision === "approve" ? "approved" : "denied";
-      await validance.resolveApproval(entry.approvalId, {
-        decision: resolution,
-      });
-      await ctx.answerCallbackQuery({
-        text: decision === "approve" ? "Approved!" : "Denied",
-      });
+      const isApproval = decision === "approve" || decision === "remember";
+      const resolution: { decision: "approved" | "denied"; remember?: boolean } = {
+        decision: isApproval ? "approved" : "denied",
+      };
+      if (decision === "remember") resolution.remember = true;
+
+      await validance.resolveApproval(entry.approvalId, resolution);
+
+      const labels: Record<string, string> = {
+        approve: "Approved!",
+        remember: "Approved + rule created!",
+        deny: "Denied",
+      };
+      await ctx.answerCallbackQuery({ text: labels[decision] });
 
       if (decision === "deny") {
         await bot.api.editMessageText(
           entry.chatId,
           entry.messageId,
-          "Payment denied."
+          "Action denied."
         );
         pendingProposals.delete(proposalId);
       } else {
+        const suffix = decision === "remember"
+          ? "\n\n<i>Approved + remembered \u2014 executing...</i>"
+          : "\n\n<i>Approved \u2014 executing...</i>";
         await bot.api.editMessageText(
           entry.chatId,
           entry.messageId,
-          formatApprovalRequest(entry.action, entry.params) +
-            "\n\n<i>Approved — executing on-chain...</i>",
+          formatApprovalRequest(entry.action, entry.params, catalog) + suffix,
           { parse_mode: "HTML" }
         );
       }
@@ -215,10 +387,12 @@ export function createBot(
 
     // Show approval buttons
     const keyboard = new InlineKeyboard()
-      .text("Approve", `approve:${proposalId}`)
-      .text("Deny", `deny:${proposalId}`);
+      .text("\u2705 Approve", `approve:${proposalId}`)
+      .text("\ud83d\uddd1 Deny", `deny:${proposalId}`)
+      .row()
+      .text("\ud83e\udde0 Approve + Remember", `remember:${proposalId}`);
 
-    const text = formatApprovalRequest(entry.action, entry.params);
+    const text = formatApprovalRequest(entry.action, entry.params, catalog);
 
     bot.api
       .editMessageText(entry.chatId, entry.messageId, text, {
@@ -230,7 +404,49 @@ export function createBot(
       });
   };
 
+  // --- Proposal submission helper ---
+
+  function submitProposal(
+    chatId: number,
+    messageId: number,
+    intent: PaymentIntent,
+    session: string
+  ): void {
+    const proposalId = crypto.randomUUID();
+    const notifyUrl = `http://${webhookHost}:${webhookPort}/webhook?proposalId=${proposalId}`;
+
+    const request: ProposalRequest = {
+      action: intent.action,
+      parameters: intent.params,
+      session_hash: session,
+      notify_url: notifyUrl,
+    };
+
+    const promise = validance.submitProposal(request);
+
+    addPending(proposalId, {
+      chatId,
+      messageId,
+      promise,
+      approvalId: null,
+      action: intent.action,
+      params: intent.params,
+      createdAt: Date.now(),
+    });
+
+    promise
+      .then((result) =>
+        handleProposalResult(bot, proposalId, result, catalog)
+      )
+      .catch((err) => handleProposalError(bot, proposalId, err));
+  }
+
   return { bot, onApprovalReady };
+}
+
+/** Escape HTML for Telegram. */
+function escapeCmd(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 // --- Result handlers (run after proposal completes) ---
@@ -238,52 +454,37 @@ export function createBot(
 async function handleProposalResult(
   bot: Bot,
   proposalId: string,
-  result: ProposalResult
+  result: ProposalResult,
+  catalog: Catalog
 ): Promise<void> {
   const entry = pendingProposals.get(proposalId);
   if (!entry) return;
 
   try {
-    const text = formatResult(result, entry.action);
+    const text = formatResult(result, entry.action, catalog);
     await bot.api.editMessageText(entry.chatId, entry.messageId, text, {
       parse_mode: "HTML",
     });
 
-    // Track deployed contracts
+    // Generic result tracking + chat history
     if (result.status === "completed" && result.result?.output) {
       try {
         const output = JSON.parse(result.result.output);
-        if (entry.action === "ton_escrow" && output.contract_address) {
-          addContract(entry.chatId, {
-            address: output.contract_address,
-            recipient: output.recipient,
-            amount: output.amount,
-            condition: output.condition,
-            status: "deployed",
-            createdAt: Date.now(),
-          });
-        } else if (
-          entry.action === "ton_release" &&
-          output.contract_address
-        ) {
-          updateContractStatus(
+        if (!output.error && output.status !== "failed") {
+          addResult(entry.chatId, entry.action, output);
+          recordToolResult(
             entry.chatId,
-            output.contract_address,
-            "released"
-          );
-        } else if (
-          entry.action === "ton_refund" &&
-          output.contract_address
-        ) {
-          updateContractStatus(
-            entry.chatId,
-            output.contract_address,
-            "refunded"
+            entry.action,
+            catalog.formatSummary(entry.action, output)
           );
         }
       } catch {
-        // Non-JSON output, skip contract tracking
+        // Non-JSON output, skip result tracking
       }
+    } else if (result.status === "denied") {
+      recordToolResult(entry.chatId, entry.action, "Action was denied by user.");
+    } else if (result.status === "failed") {
+      recordToolResult(entry.chatId, entry.action, `Failed: ${result.result?.error ?? result.reason ?? "unknown error"}`);
     }
   } catch (err) {
     console.error("[bot] Failed to update message with result:", err);

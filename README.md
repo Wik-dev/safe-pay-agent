@@ -13,18 +13,39 @@ User chats naturally in Telegram. AI proposes the payment. [Validance](https://v
 ## Architecture
 
 ```
-Telegram User
-    ↓ "Send 0.5 TON to EQ... for coffee"
-Grammy Bot + Claude AI
-    ↓ extracts intent → structured proposal
-Validance Engine
-    ├─ Catalog match (only allowed actions)
-    ├─ Rate limit (3 deployments/hr)
-    ├─ Human approval gate ← [Approve] [Deny]
-    └─ Secret isolation (mnemonic never exposed to AI)
-    ↓ approved → spawn isolated container
-TON Blockchain
-    └─ SafePayment escrow contract (deploy / release / refund)
+┌─────────────────────────────────────────────────────────────────┐
+│  Telegram                                                       │
+│  ┌───────────┐    "Send 0.5 TON to EQ... for coffee"           │
+│  │   User    │─────────────────────┐                            │
+│  └───────────┘                     ▼                            │
+│                          ┌──────────────────┐                   │
+│                          │  Grammy Bot      │                   │
+│                          │  + Claude AI     │                   │
+│                          └────────┬─────────┘                   │
+│     [Approve] [Deny] [Remember]   │ structured proposal         │
+│              ▲                    ▼                              │
+│  ┌───────────┴──────────────────────────────────────────────┐   │
+│  │  Validance Engine                                        │   │
+│  │  ┌──────────┐ ┌───────────┐ ┌──────────┐ ┌───────────┐  │   │
+│  │  │ Catalog  │→│Rate Limit │→│ Learned  │→│ Approval  │  │   │
+│  │  │ Match    │ │ (3/hr)    │ │ Policy   │ │ Gate      │  │   │
+│  │  └──────────┘ └───────────┘ └──────────┘ └─────┬─────┘  │   │
+│  │                                                │         │   │
+│  │  ┌──────────────┐    ┌─────────────────────┐   │         │   │
+│  │  │ Secret Store │───→│ Isolated Container  │◄──┘         │   │
+│  │  │ (mnemonic)   │    │ (ton-worker)        │             │   │
+│  │  └──────────────┘    └──────────┬──────────┘             │   │
+│  │          audit trail ◄──────────┘                        │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                                    │                            │
+└────────────────────────────────────┼────────────────────────────┘
+                                     ▼
+                          ┌──────────────────┐
+                          │  TON Blockchain  │
+                          │  SafePayment     │
+                          │  (deploy/release │
+                          │   /refund)       │
+                          └──────────────────┘
 ```
 
 ## Full Escrow Lifecycle
@@ -59,6 +80,41 @@ npx tsx --env-file=.env src/index.ts
 cd telegram-bot && npx tsx --env-file=.env tests/test_e2e.ts
 # 24 tests: keyword filter, Claude extraction, deploy+approve, deny flow
 ```
+
+## Features Beyond Basic Escrow
+
+### Conversational AI
+- **Chat history** — per-chat memory so Claude understands follow-ups ("release the coffee escrow" without re-specifying the address)
+- **Markdown rendering** — Claude's responses render properly in Telegram (bold, code, italic)
+- **Smart pre-filter** — keyword detection skips the Claude API call for irrelevant messages, saving latency and cost
+
+### Multi-Action Support
+- **Parallel tool calls** — "make 3 payments" produces 3 separate approval messages, each with independent Approve/Deny buttons
+- Single-action and conversational flows work exactly as before
+
+### Learned Policies
+- **Approve + Remember** — a third button on every approval prompt that creates a learned policy rule
+- Future matching proposals auto-approve based on learned rules — the engine learns your trust preferences
+- `/policies` to inspect, `/reset_policies` to clear
+
+### Validance Introspection Commands
+Direct read-only queries to the safety engine — no AI involved:
+
+| Command | What it shows |
+|---------|--------------|
+| `/status` | Engine health, database, loaded catalog |
+| `/audit` | Tamper-evident audit trail (hashes, timestamps) |
+| `/catalog` | Available actions, approval tiers, rate limits |
+| `/policies` | Learned policy rules |
+| `/reset_policies` | Clear all learned rules |
+| `/contracts` | Active escrow contracts |
+
+### Balance Check
+- `ton_balance` action with optional address — omit to check the bot's own wallet
+
+### Catalog-Driven Architecture
+- Tools, keywords, system prompt, display formatting — all generated from `catalog/ton-payments.json`
+- Adding a new action = one JSON entry + one worker script, zero bot code changes
 
 ## Tech Stack
 
