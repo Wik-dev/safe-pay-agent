@@ -6,9 +6,10 @@
  */
 
 import { createServer, type Server } from "node:http";
-import { hasPaymentSignals, extractIntent } from "../src/ai.js";
+import { Catalog } from "../src/catalog.js";
+import { initAI, hasPaymentSignals, extractIntent } from "../src/ai.js";
 import { ValidanceClient, type ProposalRequest } from "../src/validance.js";
-import type { ProposalResult } from "../src/store.js";
+import type { ProposalResult, ResultRecord } from "../src/store.js";
 
 const VALIDANCE_URL = process.env.VALIDANCE_URL ?? "http://localhost:8001";
 const WEBHOOK_PORT = 3100; // dedicated test port (bot uses 3000)
@@ -16,6 +17,10 @@ const WEBHOOK_HOST = process.env.WEBHOOK_HOST ?? "172.18.0.1";
 const TEST_ADDRESS = "EQCPsCWbBzbu9yGX0EBMqyabpG7nZwx2C9HWZwMe6Llun7YE";
 
 const client = new ValidanceClient(VALIDANCE_URL);
+
+// Load catalog and init AI
+const catalog = Catalog.load();
+initAI(catalog);
 
 let passed = 0;
 let failed = 0;
@@ -103,6 +108,7 @@ async function testKeywordPreFilter(): Promise<void> {
     hasPaymentSignals("deploy a contract for 1 TON"),
     "deploy + number → has signals"
   );
+  assert(hasPaymentSignals("check balance"), "balance → has signals");
 }
 
 async function testIntentExtraction(): Promise<void> {
@@ -121,16 +127,19 @@ async function testIntentExtraction(): Promise<void> {
     assert(typeof escrow.params.condition === "string", "condition is string");
   }
 
-  // Release intent with active contract context
-  const fakeContract = {
-    address: "EQFakeAddress123",
-    recipient: TEST_ADDRESS,
-    amount: "0.05",
-    condition: "Coffee delivered",
-    status: "deployed" as const,
+  // Release intent with active result context
+  const fakeResult: ResultRecord = {
+    action: "ton_escrow",
+    output: {
+      contract_address: "EQFakeAddress123",
+      recipient: TEST_ADDRESS,
+      amount: "0.05",
+      condition: "Coffee delivered",
+      status: "deployed",
+    },
     createdAt: Date.now(),
   };
-  const release = await extractIntent("Release the coffee escrow", [fakeContract]);
+  const release = await extractIntent("Release the coffee escrow", [fakeResult]);
   assert(release.type === "tool_call", "release message → tool_call");
   if (release.type === "tool_call") {
     assert(release.action === "ton_release", `action = ton_release (got ${release.action})`);
@@ -246,6 +255,7 @@ async function main(): Promise<void> {
   console.log("Safe Pay Agent — E2E Tests");
   console.log(`Validance: ${VALIDANCE_URL}`);
   console.log(`Webhook: ${WEBHOOK_HOST}:${WEBHOOK_PORT}`);
+  console.log(`Catalog: ${catalog.actions.length} actions (${catalog.actions.join(", ")})`);
 
   await testKeywordPreFilter();
   await testValidanceHealth();

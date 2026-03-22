@@ -45,6 +45,9 @@ services:
       VALIDANCE_URL: http://validance:8000
       WEBHOOK_PORT: "3000"
       WEBHOOK_HOST: telegram-bot
+      CATALOG_PATH: /app/catalog/ton-payments.json
+    volumes:
+      - ./catalog/ton-payments.json:/app/catalog/ton-payments.json:ro
     ports:
       - "3000:3000"
     depends_on:

@@ -1,53 +1,44 @@
 /**
  * Telegram message formatting. Pure functions, no I/O.
+ * All rendering is driven by catalog display config.
  */
 
-import type { ContractRecord, ProposalResult } from "./store.js";
+import type { Catalog } from "./catalog.js";
+import { humanize } from "./catalog.js";
+import type { ProposalResult, ResultRecord } from "./store.js";
 
 /** Format an approval request for inline display. */
 export function formatApprovalRequest(
   action: string,
-  params: Record<string, unknown>
+  params: Record<string, unknown>,
+  catalog: Catalog
 ): string {
-  switch (action) {
-    case "ton_escrow":
-      return [
-        `<b>Deploy Escrow Contract</b>`,
-        ``,
-        `<b>Recipient:</b> <code>${escapeHtml(String(params.recipient))}</code>`,
-        `<b>Amount:</b> ${escapeHtml(String(params.amount))} TON`,
-        `<b>Condition:</b> ${escapeHtml(String(params.condition))}`,
-        ``,
-        `Approve this payment?`,
-      ].join("\n");
+  const display = catalog.template(action)?.display;
+  const title = display?.title ?? humanize(action);
 
-    case "ton_release":
-      return [
-        `<b>Release Escrow Funds</b>`,
-        ``,
-        `<b>Contract:</b> <code>${escapeHtml(String(params.contract_address))}</code>`,
-        ``,
-        `This will send all escrowed funds to the recipient.`,
-      ].join("\n");
-
-    case "ton_refund":
-      return [
-        `<b>Refund Escrow</b>`,
-        ``,
-        `<b>Contract:</b> <code>${escapeHtml(String(params.contract_address))}</code>`,
-        ``,
-        `This will refund all escrowed funds back to you.`,
-      ].join("\n");
-
-    default:
-      return `<b>Action:</b> ${escapeHtml(action)}\n<b>Params:</b> ${escapeHtml(JSON.stringify(params))}`;
+  const lines = [`<b>${escapeHtml(title)}</b>`, ""];
+  for (const [key, val] of Object.entries(params)) {
+    const label = display?.param_labels?.[key] ?? humanize(key);
+    const value = String(val);
+    // Use <code> for address-like values, plain text otherwise
+    const formatted = looksLikeAddress(value)
+      ? `<code>${escapeHtml(value)}</code>`
+      : escapeHtml(value);
+    lines.push(`<b>${escapeHtml(label)}:</b> ${formatted}`);
   }
+  lines.push("", "Approve this action?");
+
+  return lines.join("\n");
 }
 
 /** Format a completed proposal result. */
-export function formatResult(result: ProposalResult, action: string): string {
+export function formatResult(
+  result: ProposalResult,
+  action: string,
+  catalog: Catalog
+): string {
   if (result.status === "denied") {
-    return "Payment denied.";
+    return "Action denied.";
   }
 
   if (result.status === "rate_limited") {
@@ -55,7 +46,6 @@ export function formatResult(result: ProposalResult, action: string): string {
   }
 
   if (result.status === "failed") {
-    // error may be in result.error, result.reason, or inside the output JSON
     let error = result.result?.error ?? result.reason;
     if (!error && result.result?.output) {
       try {
@@ -70,70 +60,64 @@ export function formatResult(result: ProposalResult, action: string): string {
   try {
     const output = JSON.parse(result.result?.output ?? "{}");
 
-    // Worker-level error (Validance returns "completed" but worker reported failure)
+    // Worker-level error
     if (output.error || output.status === "failed") {
       return `Execution failed: ${escapeHtml(output.error ?? "Worker reported failure")}`;
     }
 
-    switch (action) {
-      case "ton_escrow":
-        return [
-          `<b>Escrow Deployed</b>`,
-          ``,
-          `<b>Contract:</b> <code>${escapeHtml(output.contract_address)}</code>`,
-          `<b>Recipient:</b> <code>${escapeHtml(output.recipient)}</code>`,
-          `<b>Amount:</b> ${escapeHtml(output.amount)} TON`,
-          `<b>Condition:</b> ${escapeHtml(output.condition)}`,
-          `<b>Status:</b> ${output.status}`,
-        ].join("\n");
+    const display = catalog.template(action)?.display;
+    const title = display?.result_title ?? humanize(action);
+    const labels = display?.result_labels ?? {};
 
-      case "ton_release":
-        return [
-          `<b>Funds Released</b>`,
-          ``,
-          `<b>Contract:</b> <code>${escapeHtml(output.contract_address)}</code>`,
-          `<b>Recipient:</b> <code>${escapeHtml(output.recipient)}</code>`,
-          `<b>Status:</b> ${output.status}`,
-        ].join("\n");
-
-      case "ton_refund":
-        return [
-          `<b>Funds Refunded</b>`,
-          ``,
-          `<b>Contract:</b> <code>${escapeHtml(output.contract_address)}</code>`,
-          `<b>Owner:</b> <code>${escapeHtml(output.owner)}</code>`,
-          `<b>Status:</b> ${output.status}`,
-        ].join("\n");
-
-      default:
-        return `<b>Result:</b>\n<pre>${escapeHtml(JSON.stringify(output, null, 2))}</pre>`;
+    const lines = [`<b>${escapeHtml(title)}</b>`, ""];
+    for (const [key, val] of Object.entries(output)) {
+      if (val === undefined || val === null) continue;
+      const label = labels[key] ?? humanize(key);
+      const value = String(val);
+      const formatted = looksLikeAddress(value)
+        ? `<code>${escapeHtml(value)}</code>`
+        : escapeHtml(value);
+      lines.push(`<b>${escapeHtml(label)}:</b> ${formatted}`);
     }
+
+    return lines.join("\n");
   } catch {
     return `<b>Result:</b>\n<pre>${escapeHtml(result.result?.output ?? "No output")}</pre>`;
   }
 }
 
-/** Format a list of contracts for /contracts command. */
-export function formatContractList(contracts: ContractRecord[]): string {
-  if (contracts.length === 0) {
-    return "No contracts found. Send a payment request to create one!";
+/** Format result history for /contracts (or any listing) command. */
+export function formatResultHistory(
+  results: ResultRecord[],
+  catalog: Catalog
+): string {
+  if (results.length === 0) {
+    return "No results found. Try requesting an action!";
   }
 
-  const lines = contracts.map((c, i) => {
-    const status =
-      c.status === "deployed"
-        ? "Active"
-        : c.status === "released"
-          ? "Released"
-          : "Refunded";
+  const lines = results.map((r, i) => {
+    const display = catalog.template(r.action)?.display;
+    const title = display?.title ?? humanize(r.action);
+    const statusField = display?.context_status_field;
+    const status = statusField ? String(r.output[statusField] ?? "unknown") : "done";
+
+    const detailParts: string[] = [];
+    const contextFields = display?.context_fields ?? Object.keys(r.output).slice(0, 3);
+    for (const field of contextFields) {
+      if (r.output[field] !== undefined) {
+        const value = String(r.output[field]);
+        const short = value.length > 16 ? value.slice(0, 12) + "..." : value;
+        detailParts.push(looksLikeAddress(value) ? `<code>${escapeHtml(short)}</code>` : escapeHtml(short));
+      }
+    }
+
     return [
-      `<b>${i + 1}.</b> ${escapeHtml(c.condition)}`,
-      `   <code>${escapeHtml(c.address)}</code>`,
-      `   ${escapeHtml(c.amount)} TON → <code>${escapeHtml(c.recipient.slice(0, 12))}...</code> [${status}]`,
+      `<b>${i + 1}.</b> ${escapeHtml(title)}`,
+      `   ${detailParts.join(" | ")} [${escapeHtml(capitalize(status))}]`,
     ].join("\n");
   });
 
-  return `<b>Your Contracts:</b>\n\n${lines.join("\n\n")}`;
+  return `<b>Your Results:</b>\n\n${lines.join("\n\n")}`;
 }
 
 /** Format an error message for the user. */
@@ -148,4 +132,13 @@ function escapeHtml(text: string): string {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+}
+
+/** Check if a value looks like a blockchain address. */
+function looksLikeAddress(value: string): boolean {
+  return /^(EQ|UQ|0:)[A-Za-z0-9_-]{20,}$/.test(value);
+}
+
+function capitalize(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }

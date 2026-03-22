@@ -4,39 +4,41 @@
 
 import { Bot, InlineKeyboard } from "grammy";
 import crypto from "node:crypto";
+import type { Catalog } from "./catalog.js";
 import { extractIntent, hasPaymentSignals } from "./ai.js";
 import { ValidanceClient, type ProposalRequest } from "./validance.js";
 import {
-  addContract,
+  addResult,
   addPending,
-  getActiveContracts,
-  getAllContracts,
+  getActiveResults,
+  getAllResults,
   pendingProposals,
-  updateContractStatus,
+  updateResult,
   type ProposalResult,
 } from "./store.js";
 import {
   formatApprovalRequest,
-  formatContractList,
+  formatResultHistory,
   formatError,
   formatResult,
 } from "./format.js";
 import type { OnApprovalReady } from "./webhook.js";
 
-const CANNED_RESPONSE = `I'm Safe Pay Agent — I help you make escrow payments on TON testnet.
+const CANNED_RESPONSE = `I'm Safe Pay Agent — I help you execute validated actions.
 
 Try something like:
-• "Send 0.5 TON to EQ... for coffee delivery"
-• "Release the coffee escrow"
-• "Refund my last payment"
+\u2022 "Send 0.5 TON to EQ... for coffee delivery"
+\u2022 "Release the coffee escrow"
+\u2022 "Check balance of EQ..."
 
-Or use /contracts to see your active escrows.`;
+Or use /results to see your history.`;
 
 export function createBot(
   token: string,
   validance: ValidanceClient,
   webhookHost: string,
-  webhookPort: number
+  webhookPort: number,
+  catalog: Catalog
 ): { bot: Bot; onApprovalReady: OnApprovalReady } {
   const bot = new Bot(token);
 
@@ -52,19 +54,28 @@ export function createBot(
 
   bot.command("start", async (ctx) => {
     await ctx.reply(
-      `<b>Safe Pay Agent</b>\n\nI help you create and manage escrow payments on TON testnet.\n\nJust describe your payment in natural language, and I'll handle the rest.\n\n<b>Commands:</b>\n/contracts — List your escrows\n/help — How to use me`,
+      `<b>Safe Pay Agent</b>\n\nI help you execute validated actions via natural language.\n\nJust describe what you want to do, and I'll handle the rest.\n\n<b>Commands:</b>\n/results \u2014 List your results\n/help \u2014 How to use me`,
       { parse_mode: "HTML" }
     );
   });
 
   bot.command("contracts", async (ctx) => {
-    const contracts = getAllContracts(ctx.chat.id);
-    await ctx.reply(formatContractList(contracts), { parse_mode: "HTML" });
+    const results = getAllResults(ctx.chat.id);
+    await ctx.reply(formatResultHistory(results, catalog), {
+      parse_mode: "HTML",
+    });
+  });
+
+  bot.command("results", async (ctx) => {
+    const results = getAllResults(ctx.chat.id);
+    await ctx.reply(formatResultHistory(results, catalog), {
+      parse_mode: "HTML",
+    });
   });
 
   bot.command("help", async (ctx) => {
     await ctx.reply(
-      `<b>How to use Safe Pay Agent</b>\n\n<b>Create an escrow:</b>\n"Send 0.5 TON to EQ... for coffee delivery"\n\n<b>Release funds:</b>\n"Release the coffee escrow"\n\n<b>Refund:</b>\n"Refund the payment to EQ..."\n\nAll payments require your explicit approval before executing on-chain.`,
+      `<b>How to use Safe Pay Agent</b>\n\nDescribe your action in natural language. I'll extract the intent, show you a confirmation, and execute it through Validance.\n\nAll actions requiring approval will show Approve/Deny buttons before executing.`,
       { parse_mode: "HTML" }
     );
   });
@@ -78,7 +89,7 @@ export function createBot(
     // Skip commands (already handled above)
     if (text.startsWith("/")) return;
 
-    // Keyword pre-filter: no payment signals → instant canned response
+    // Keyword pre-filter: no signals → instant canned response
     if (!hasPaymentSignals(text)) {
       await ctx.reply(CANNED_RESPONSE, { parse_mode: "HTML" });
       return;
@@ -88,8 +99,8 @@ export function createBot(
     const placeholder = await ctx.reply("Processing...");
 
     try {
-      const activeContracts = getActiveContracts(chatId);
-      const intent = await extractIntent(text, activeContracts);
+      const activeResults = getActiveResults(chatId, catalog);
+      const intent = await extractIntent(text, activeResults);
 
       if (intent.type === "text") {
         await bot.api.editMessageText(
@@ -100,7 +111,7 @@ export function createBot(
         return;
       }
 
-      // Payment intent — submit to Validance
+      // Action intent — submit to Validance
       const proposalId = crypto.randomUUID();
       const notifyUrl = `http://${webhookHost}:${webhookPort}/webhook?proposalId=${proposalId}`;
 
@@ -132,7 +143,9 @@ export function createBot(
 
       // Handle promise resolution (runs after approval + execution)
       promise
-        .then((result) => handleProposalResult(bot, proposalId, result))
+        .then((result) =>
+          handleProposalResult(bot, proposalId, result, catalog)
+        )
         .catch((err) => handleProposalError(bot, proposalId, err));
     } catch (err) {
       console.error("[bot] Error processing message:", err);
@@ -180,15 +193,15 @@ export function createBot(
         await bot.api.editMessageText(
           entry.chatId,
           entry.messageId,
-          "Payment denied."
+          "Action denied."
         );
         pendingProposals.delete(proposalId);
       } else {
         await bot.api.editMessageText(
           entry.chatId,
           entry.messageId,
-          formatApprovalRequest(entry.action, entry.params) +
-            "\n\n<i>Approved — executing on-chain...</i>",
+          formatApprovalRequest(entry.action, entry.params, catalog) +
+            "\n\n<i>Approved \u2014 executing...</i>",
           { parse_mode: "HTML" }
         );
       }
@@ -218,7 +231,7 @@ export function createBot(
       .text("Approve", `approve:${proposalId}`)
       .text("Deny", `deny:${proposalId}`);
 
-    const text = formatApprovalRequest(entry.action, entry.params);
+    const text = formatApprovalRequest(entry.action, entry.params, catalog);
 
     bot.api
       .editMessageText(entry.chatId, entry.messageId, text, {
@@ -238,51 +251,27 @@ export function createBot(
 async function handleProposalResult(
   bot: Bot,
   proposalId: string,
-  result: ProposalResult
+  result: ProposalResult,
+  catalog: Catalog
 ): Promise<void> {
   const entry = pendingProposals.get(proposalId);
   if (!entry) return;
 
   try {
-    const text = formatResult(result, entry.action);
+    const text = formatResult(result, entry.action, catalog);
     await bot.api.editMessageText(entry.chatId, entry.messageId, text, {
       parse_mode: "HTML",
     });
 
-    // Track deployed contracts
+    // Generic result tracking
     if (result.status === "completed" && result.result?.output) {
       try {
         const output = JSON.parse(result.result.output);
-        if (entry.action === "ton_escrow" && output.contract_address) {
-          addContract(entry.chatId, {
-            address: output.contract_address,
-            recipient: output.recipient,
-            amount: output.amount,
-            condition: output.condition,
-            status: "deployed",
-            createdAt: Date.now(),
-          });
-        } else if (
-          entry.action === "ton_release" &&
-          output.contract_address
-        ) {
-          updateContractStatus(
-            entry.chatId,
-            output.contract_address,
-            "released"
-          );
-        } else if (
-          entry.action === "ton_refund" &&
-          output.contract_address
-        ) {
-          updateContractStatus(
-            entry.chatId,
-            output.contract_address,
-            "refunded"
-          );
+        if (!output.error && output.status !== "failed") {
+          addResult(entry.chatId, entry.action, output);
         }
       } catch {
-        // Non-JSON output, skip contract tracking
+        // Non-JSON output, skip result tracking
       }
     }
   } catch (err) {

@@ -20,6 +20,16 @@
       "secret_refs": ["TON_MNEMONIC", "TON_API_ENDPOINT", "TON_API_KEY"],
       "network_policy": {
         "egress_whitelist": ["testnet.toncenter.com", "toncenter.com"]
+      },
+      "keywords": ["send", "pay", "transfer", "escrow", "deploy"],
+      "display": {
+        "title": "Deploy Escrow Contract",
+        "result_title": "Escrow Deployed",
+        "param_labels": { "recipient": "Recipient", "amount": "Amount (TON)", "condition": "Condition" },
+        "result_labels": { "contract_address": "Contract", "recipient": "Recipient", "amount": "Amount (TON)", "condition": "Condition", "status": "Status" },
+        "context_fields": ["contract_address", "amount", "recipient", "condition"],
+        "context_status_field": "status",
+        "context_active_value": "deployed"
       }
     },
     "ton_release": {
@@ -40,6 +50,16 @@
       "secret_refs": ["TON_MNEMONIC", "TON_API_ENDPOINT", "TON_API_KEY"],
       "network_policy": {
         "egress_whitelist": ["testnet.toncenter.com", "toncenter.com"]
+      },
+      "keywords": ["release", "confirm", "approve payment"],
+      "display": {
+        "title": "Release Escrow Funds",
+        "result_title": "Funds Released",
+        "param_labels": { "contract_address": "Contract" },
+        "result_labels": { "contract_address": "Contract", "recipient": "Recipient", "status": "Status" },
+        "context_fields": ["contract_address", "recipient"],
+        "context_status_field": "status",
+        "context_active_value": "released"
       }
     },
     "ton_refund": {
@@ -60,9 +80,51 @@
       "secret_refs": ["TON_MNEMONIC", "TON_API_ENDPOINT", "TON_API_KEY"],
       "network_policy": {
         "egress_whitelist": ["testnet.toncenter.com", "toncenter.com"]
+      },
+      "keywords": ["refund", "cancel", "return"],
+      "display": {
+        "title": "Refund Escrow",
+        "result_title": "Funds Refunded",
+        "param_labels": { "contract_address": "Contract" },
+        "result_labels": { "contract_address": "Contract", "owner": "Owner", "status": "Status" },
+        "context_fields": ["contract_address", "owner"],
+        "context_status_field": "status",
+        "context_active_value": "refunded"
+      }
+    },
+    "ton_balance": {
+      "description": "Check the TON balance of an address. Returns the current balance and contract state.",
+      "persistent": false,
+      "docker_image": "ton-worker",
+      "command_template": "node /app/dist/ton_balance.js",
+      "parameter_schema": {
+        "type": "object",
+        "properties": {
+          "address": {"type": "string", "description": "TON address to check balance for"}
+        },
+        "required": ["address"]
+      },
+      "approval_tier": "auto-approve",
+      "timeout": 30,
+      "rate_limit": 10,
+      "secret_refs": ["TON_API_ENDPOINT", "TON_API_KEY"],
+      "network_policy": {
+        "egress_whitelist": ["testnet.toncenter.com", "toncenter.com"]
+      },
+      "keywords": ["balance", "check"],
+      "display": {
+        "title": "Check Balance",
+        "result_title": "Balance",
+        "param_labels": { "address": "Address" },
+        "result_labels": { "address": "Address", "balance": "Balance (TON)", "state": "State", "status": "Status" },
+        "context_fields": ["address", "balance"],
+        "context_status_field": "status",
+        "context_active_value": "checked"
       }
     }
   },
+  "keywords_global": ["contract", "deny"],
+  "keyword_patterns": ["\\d+(\\.\\d+)?\\s*(ton|TON)", "(?:EQ|UQ)[A-Za-z0-9_-]{46,48}"],
   "images": {
     "ton-worker": "safe-pay-ton-worker:latest"
   }
