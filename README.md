@@ -48,6 +48,10 @@ User chats naturally in Telegram. AI proposes the payment. [Validance](https://v
                           └──────────────────┘
 ```
 
+## Demo
+
+[![Demo Video](https://img.youtube.com/vi/NcPtu24QBPc/maxresdefault.jpg)](https://youtu.be/NcPtu24QBPc)
+
 ## Full Escrow Lifecycle
 
 > "Send 0.05 TON to EQ... for hackathon demo"
