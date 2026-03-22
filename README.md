@@ -13,18 +13,39 @@ User chats naturally in Telegram. AI proposes the payment. [Validance](https://v
 ## Architecture
 
 ```
-Telegram User
-    ↓ "Send 0.5 TON to EQ... for coffee"
-Grammy Bot + Claude AI
-    ↓ extracts intent → structured proposal
-Validance Engine
-    ├─ Catalog match (only allowed actions)
-    ├─ Rate limit (3 deployments/hr)
-    ├─ Human approval gate ← [Approve] [Deny]
-    └─ Secret isolation (mnemonic never exposed to AI)
-    ↓ approved → spawn isolated container
-TON Blockchain
-    └─ SafePayment escrow contract (deploy / release / refund)
+┌─────────────────────────────────────────────────────────────────┐
+│  Telegram                                                       │
+│  ┌───────────┐    "Send 0.5 TON to EQ... for coffee"           │
+│  │   User    │─────────────────────┐                            │
+│  └───────────┘                     ▼                            │
+│                          ┌──────────────────┐                   │
+│                          │  Grammy Bot      │                   │
+│                          │  + Claude AI     │                   │
+│                          └────────┬─────────┘                   │
+│     [Approve] [Deny] [Remember]   │ structured proposal         │
+│              ▲                    ▼                              │
+│  ┌───────────┴──────────────────────────────────────────────┐   │
+│  │  Validance Engine                                        │   │
+│  │  ┌──────────┐ ┌───────────┐ ┌──────────┐ ┌───────────┐  │   │
+│  │  │ Catalog  │→│Rate Limit │→│ Learned  │→│ Approval  │  │   │
+│  │  │ Match    │ │ (3/hr)    │ │ Policy   │ │ Gate      │  │   │
+│  │  └──────────┘ └───────────┘ └──────────┘ └─────┬─────┘  │   │
+│  │                                                │         │   │
+│  │  ┌──────────────┐    ┌─────────────────────┐   │         │   │
+│  │  │ Secret Store │───→│ Isolated Container  │◄──┘         │   │
+│  │  │ (mnemonic)   │    │ (ton-worker)        │             │   │
+│  │  └──────────────┘    └──────────┬──────────┘             │   │
+│  │          audit trail ◄──────────┘                        │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                                    │                            │
+└────────────────────────────────────┼────────────────────────────┘
+                                     ▼
+                          ┌──────────────────┐
+                          │  TON Blockchain  │
+                          │  SafePayment     │
+                          │  (deploy/release │
+                          │   /refund)       │
+                          └──────────────────┘
 ```
 
 ## Full Escrow Lifecycle
