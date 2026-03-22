@@ -26,6 +26,7 @@ export interface TemplateEntry {
     required: string[];
   };
   approval_tier: string;
+  rate_limit?: number;
   keywords?: string[];
   display?: DisplayConfig;
   [key: string]: unknown;

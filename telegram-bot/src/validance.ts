@@ -69,7 +69,7 @@ export class ValidanceClient {
     return (await res.json()) as { status: string };
   }
 
-  /** Check Validance API health. */
+  /** Check Validance API health (returns full status). */
   async healthCheck(): Promise<boolean> {
     try {
       const res = await fetch(`${this.baseUrl}/api/health`, {
@@ -80,4 +80,77 @@ export class ValidanceClient {
       return false;
     }
   }
+
+  /** Get detailed health status. */
+  async getHealth(): Promise<HealthResponse> {
+    const res = await fetch(`${this.baseUrl}/api/health`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) throw new Error(`Health check failed: ${res.status}`);
+    return (await res.json()) as HealthResponse;
+  }
+
+  /** Get audit trail for an entity. */
+  async getAuditTrail(entityId: string, limit?: number): Promise<AuditResponse> {
+    const url = new URL(`${this.baseUrl}/api/audit/${entityId}`);
+    if (limit) url.searchParams.set("limit", String(limit));
+    const res = await fetch(url.toString(), {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) throw new Error(`Audit query failed: ${res.status}`);
+    return (await res.json()) as AuditResponse;
+  }
+
+  /** Get learned policy rules. */
+  async getPolicies(sessionHash?: string): Promise<PoliciesResponse> {
+    const url = new URL(`${this.baseUrl}/api/policies`);
+    if (sessionHash) url.searchParams.set("session_hash", sessionHash);
+    const res = await fetch(url.toString(), {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) throw new Error(`Policies query failed: ${res.status}`);
+    return (await res.json()) as PoliciesResponse;
+  }
+}
+
+export interface HealthResponse {
+  status: string;
+  database: string;
+  azure_storage?: string;
+  timestamp: string;
+}
+
+export interface AuditEvent {
+  id: number;
+  event_type: string;
+  entity_type: string;
+  entity_id: string;
+  actor: string;
+  timestamp: string | null;
+  details: Record<string, unknown> | null;
+  event_hash: string;
+  previous_event_hash: string;
+  previous_entity_hash: string;
+}
+
+export interface AuditResponse {
+  entity_id: string;
+  total_events: number;
+  events: AuditEvent[];
+}
+
+export interface PolicyRule {
+  rule_id: string;
+  template_name: string;
+  scope: string;
+  match_pattern: Record<string, unknown>;
+  created_at: string;
+  expires_at: string | null;
+  approval_id: string | null;
+  session_hash: string | null;
+  reason: string | null;
+}
+
+export interface PoliciesResponse {
+  rules: PolicyRule[];
 }

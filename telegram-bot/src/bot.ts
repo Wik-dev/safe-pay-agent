@@ -77,7 +77,139 @@ export function createBot(
 
   bot.command("help", async (ctx) => {
     await ctx.reply(
-      `<b>How to use Safe Pay Agent</b>\n\nDescribe your action in natural language. I'll extract the intent, show you a confirmation, and execute it through Validance.\n\nAll actions requiring approval will show Approve/Deny buttons before executing.`,
+      `<b>How to use Safe Pay Agent</b>\n\nDescribe your action in natural language. I'll extract the intent, show you a confirmation, and execute it through Validance.\n\nAll actions requiring approval will show Approve/Deny buttons before executing.\n\n<b>Commands:</b>\n/status \u2014 Engine health + catalog summary\n/audit \u2014 Your audit trail\n/contracts \u2014 Active contracts\n/policies \u2014 Learned policy rules\n/catalog \u2014 Available actions + safety config\n/results \u2014 Result history`,
+      { parse_mode: "HTML" }
+    );
+  });
+
+  // --- Validance introspection commands ---
+
+  bot.command("status", async (ctx) => {
+    try {
+      const health = await validance.getHealth();
+      const dbStatus = health.database === "healthy" ? "connected" : health.database;
+      const actionCount = catalog.actions.length;
+
+      const actionLines = catalog.actions.map((name) => {
+        const tpl = catalog.template(name)!;
+        const tier = tpl.approval_tier;
+        const rate = tpl.rate_limit ? `${tpl.rate_limit}/hr` : "unlimited";
+        return `  <code>${escapeCmd(name)}</code>  \u2014 ${escapeCmd(tier)} (${rate})`;
+      });
+
+      await ctx.reply(
+        `\ud83d\udfe2 <b>Validance Engine:</b> ${escapeCmd(health.status)}\n<b>Database:</b> ${escapeCmd(dbStatus)}\n<b>Catalog:</b> ${actionCount} actions loaded\n\n<b>Actions:</b>\n${actionLines.join("\n")}`,
+        { parse_mode: "HTML" }
+      );
+    } catch {
+      await ctx.reply("\u26a0\ufe0f Validance engine not reachable");
+    }
+  });
+
+  bot.command("audit", async (ctx) => {
+    try {
+      const session = sessionHash(ctx.chat.id);
+      const entityId = `proposal_${session.slice(0, 8)}`;
+      const audit = await validance.getAuditTrail(entityId);
+
+      if (audit.total_events === 0) {
+        await ctx.reply(
+          `\ud83d\udccb <b>Audit Trail</b> (session: <code>${session.slice(0, 8)}...</code>)\n\nNo audit events found.`,
+          { parse_mode: "HTML" }
+        );
+        return;
+      }
+
+      // Filter to last 24h and limit display
+      const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+      const recent = audit.events.filter(
+        (e) => e.timestamp && new Date(e.timestamp).getTime() > cutoff
+      );
+
+      if (recent.length === 0) {
+        await ctx.reply(
+          `\ud83d\udccb <b>Audit Trail</b> (session: <code>${session.slice(0, 8)}...</code>)\n\n${audit.total_events} events total, but none in the last 24h.`,
+          { parse_mode: "HTML" }
+        );
+        return;
+      }
+
+      const lines = recent.slice(-15).map((e, i) => {
+        const time = e.timestamp
+          ? new Date(e.timestamp).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
+          : "??:??";
+        let detail = "";
+        if (e.details) {
+          const d = e.details;
+          if (d.template_name) detail += `\n   ${escapeCmd(String(d.template_name))}`;
+          if (d.decision) detail += `\n   decided_by: ${escapeCmd(String(d.decided_by ?? "user"))}`;
+        }
+        if (e.event_hash) {
+          const prev = e.previous_entity_hash?.slice(0, 4) ?? "0000";
+          detail += `\n   hash: <code>${prev}\u2192${e.event_hash.slice(0, 4)}</code>`;
+        }
+        return `${i + 1}. [${time}] <b>${escapeCmd(e.event_type)}</b>${detail}`;
+      });
+
+      await ctx.reply(
+        `\ud83d\udccb <b>Audit Trail</b> (session: <code>${session.slice(0, 8)}...</code>)\n\n${lines.join("\n\n")}\n\nNo events older than 24h shown.`,
+        { parse_mode: "HTML" }
+      );
+    } catch {
+      await ctx.reply("\u26a0\ufe0f Validance engine not reachable");
+    }
+  });
+
+  bot.command("policies", async (ctx) => {
+    try {
+      const session = sessionHash(ctx.chat.id);
+      const policies = await validance.getPolicies(session);
+
+      if (policies.rules.length === 0) {
+        await ctx.reply(
+          `\ud83d\udee1\ufe0f <b>Learned Policies</b>\n\nNo learned rules yet.\nApprove an action with "remember" to create rules.`,
+          { parse_mode: "HTML" }
+        );
+        return;
+      }
+
+      const lines = policies.rules.map((r, i) => {
+        const pattern = Object.keys(r.match_pattern).length > 0
+          ? `\n   Pattern: ${escapeCmd(JSON.stringify(r.match_pattern))}`
+          : "";
+        let expiry = "";
+        if (r.expires_at) {
+          const days = Math.ceil(
+            (new Date(r.expires_at).getTime() - Date.now()) / (1000 * 60 * 60 * 24)
+          );
+          expiry = ` (expires in ${days}d)`;
+        }
+        const source = r.approval_id ? `\n   Created from: approval #${escapeCmd(r.approval_id)}` : "";
+        return `${i + 1}. <b>${escapeCmd(r.template_name)}:</b> ${escapeCmd(r.scope)}${expiry}${pattern}${source}`;
+      });
+
+      await ctx.reply(
+        `\ud83d\udee1\ufe0f <b>Learned Policies</b>\n\n${lines.join("\n\n")}`,
+        { parse_mode: "HTML" }
+      );
+    } catch {
+      await ctx.reply("\u26a0\ufe0f Validance engine not reachable");
+    }
+  });
+
+  bot.command("catalog", async (ctx) => {
+    const lines = catalog.actions.map((name) => {
+      const tpl = catalog.template(name)!;
+      const tier = tpl.approval_tier;
+      const rate = tpl.rate_limit ? `${tpl.rate_limit}/hr` : "unlimited";
+      const secrets = (tpl as Record<string, unknown>).secret_refs;
+      const secretCount = Array.isArray(secrets) ? secrets.length : 0;
+      const secretInfo = secretCount > 0 ? ` | Secrets: ${secretCount}` : "";
+      return `<b>${escapeCmd(name)}</b>\n  Tier: ${escapeCmd(tier)} | Rate: ${rate}${secretInfo}\n  ${escapeCmd(tpl.description)}`;
+    });
+
+    await ctx.reply(
+      `\ud83d\udcd6 <b>Action Catalog</b>\n\n${lines.join("\n\n")}`,
       { parse_mode: "HTML" }
     );
   });
@@ -274,6 +406,11 @@ export function createBot(
   }
 
   return { bot, onApprovalReady };
+}
+
+/** Escape HTML for Telegram. */
+function escapeCmd(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 // --- Result handlers (run after proposal completes) ---
