@@ -12,6 +12,7 @@ import {
   addPending,
   getActiveResults,
   getAllResults,
+  getChatHistory,
   pendingProposals,
   updateResult,
   type ProposalResult,
@@ -21,6 +22,7 @@ import {
   formatResultHistory,
   formatError,
   formatResult,
+  markdownToTelegramHtml,
 } from "./format.js";
 import type { OnApprovalReady } from "./webhook.js";
 
@@ -89,8 +91,9 @@ export function createBot(
     // Skip commands (already handled above)
     if (text.startsWith("/")) return;
 
-    // Keyword pre-filter: no signals → instant canned response
-    if (!hasPaymentSignals(text)) {
+    // Keyword pre-filter: no signals, no history, not a question → canned response
+    const hasHistory = getChatHistory(chatId).length > 0;
+    if (!hasPaymentSignals(text) && !hasHistory && !text.includes("?")) {
       await ctx.reply(CANNED_RESPONSE, { parse_mode: "HTML" });
       return;
     }
@@ -106,7 +109,8 @@ export function createBot(
         await bot.api.editMessageText(
           chatId,
           placeholder.message_id,
-          intent.text
+          markdownToTelegramHtml(intent.text),
+          { parse_mode: "HTML" }
         );
         return;
       }

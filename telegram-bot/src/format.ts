@@ -134,6 +134,26 @@ function escapeHtml(text: string): string {
     .replace(/>/g, "&gt;");
 }
 
+/** Convert Markdown formatting to Telegram HTML. */
+export function markdownToTelegramHtml(text: string): string {
+  // Escape HTML entities first
+  let out = text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  // Bold: **text** → <b>text</b>
+  out = out.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+  // Italic: *text* → <i>text</i> (but not inside bold)
+  out = out.replace(/(?<!\w)\*(?!\*)(.+?)(?<!\*)\*(?!\w)/g, "<i>$1</i>");
+  // Inline code: `text` → <code>text</code>
+  out = out.replace(/`([^`]+)`/g, "<code>$1</code>");
+  // Strikethrough: ~~text~~ → <s>text</s>
+  out = out.replace(/~~(.+?)~~/g, "<s>$1</s>");
+  // Remove --- horizontal rules (not supported in Telegram)
+  out = out.replace(/^-{3,}$/gm, "");
+  return out;
+}
+
 /** Check if a value looks like a blockchain address. */
 function looksLikeAddress(value: string): boolean {
   return /^(EQ|UQ|0:)[A-Za-z0-9_-]{20,}$/.test(value);
