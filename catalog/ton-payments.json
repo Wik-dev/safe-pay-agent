@@ -16,7 +16,7 @@
       },
       "approval_tier": "human-confirm",
       "timeout": 120,
-      "rate_limit": 3,
+      "rate_limit": 20,
       "secret_refs": ["TON_MNEMONIC", "TON_API_ENDPOINT", "TON_API_KEY"],
       "network_policy": {
         "egress_whitelist": ["testnet.toncenter.com", "toncenter.com"]
@@ -107,7 +107,7 @@
       "approval_tier": "auto-approve",
       "timeout": 30,
       "rate_limit": 10,
-      "secret_refs": ["TON_API_ENDPOINT", "TON_API_KEY"],
+      "secret_refs": ["TON_MNEMONIC", "TON_API_ENDPOINT", "TON_API_KEY"],
       "network_policy": {
         "egress_whitelist": ["testnet.toncenter.com", "toncenter.com"]
       },

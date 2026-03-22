@@ -56,7 +56,7 @@ export function createBot(
 
   bot.command("start", async (ctx) => {
     await ctx.reply(
-      `<b>Safe Pay Agent</b>\n\nI help you execute validated actions via natural language.\n\nJust describe what you want to do, and I'll handle the rest.\n\n<b>Commands:</b>\n/results \u2014 List your results\n/help \u2014 How to use me`,
+      `<b>Safe Pay Agent</b>\n\nI help you execute validated actions via natural language.\n\nJust describe what you want to do, and I'll handle the rest.\n\n<b>Commands:</b>\n/help \u2014 Full command list\n/results \u2014 List your results\n/policies \u2014 Learned rules\n/reset_policies \u2014 Clear learned rules`,
       { parse_mode: "HTML" }
     );
   });
@@ -77,7 +77,7 @@ export function createBot(
 
   bot.command("help", async (ctx) => {
     await ctx.reply(
-      `<b>How to use Safe Pay Agent</b>\n\nDescribe your action in natural language. I'll extract the intent, show you a confirmation, and execute it through Validance.\n\nAll actions requiring approval will show Approve/Deny buttons before executing.\n\n<b>Commands:</b>\n/status \u2014 Engine health + catalog summary\n/audit \u2014 Your audit trail\n/contracts \u2014 Active contracts\n/policies \u2014 Learned policy rules\n/catalog \u2014 Available actions + safety config\n/results \u2014 Result history`,
+      `<b>How to use Safe Pay Agent</b>\n\nDescribe your action in natural language. I'll extract the intent, show you a confirmation, and execute it through Validance.\n\nAll actions requiring approval will show Approve/Deny buttons before executing. Use <b>Approve + Remember</b> to teach the engine to auto-approve similar actions in the future.\n\n<b>Commands:</b>\n/status \u2014 Engine health + catalog summary\n/audit \u2014 Your audit trail\n/contracts \u2014 Active contracts\n/policies \u2014 Learned policy rules\n/reset_policies \u2014 Clear all learned rules\n/catalog \u2014 Available actions + safety config\n/results \u2014 Result history`,
       { parse_mode: "HTML" }
     );
   });
@@ -273,20 +273,27 @@ export function createBot(
       }
 
       if (intent.type === "multi_tool_call") {
-        // Multiple actions — edit placeholder with overview, then send individual messages
+        // Multiple actions — execute sequentially to avoid blockchain seqno races.
+        // Run in background so the message handler returns and Grammy can process callbacks.
         await bot.api.editMessageText(
           chatId,
           placeholder.message_id,
-          `${intent.intents.length} actions queued — sending approval requests...`
+          `${intent.intents.length} actions queued — processing sequentially...`
         );
 
-        for (const sub of intent.intents) {
-          const msg = await bot.api.sendMessage(
-            chatId,
-            `${sub.summary}\n\nSubmitting to Validance...`
-          );
-          submitProposal(chatId, msg.message_id, sub, sessionHash(chatId));
-        }
+        const session = sessionHash(chatId);
+        const intents = intent.intents;
+        // Fire-and-forget the sequential chain
+        (async () => {
+          for (const sub of intents) {
+            const msg = await bot.api.sendMessage(
+              chatId,
+              formatApprovalRequest(sub.action, sub.params, catalog) + "\n\n<i>Submitting to Validance...</i>",
+              { parse_mode: "HTML" }
+            );
+            await submitProposalAsync(chatId, msg.message_id, sub, session);
+          }
+        })().catch((err) => console.error("[bot] Multi-tool chain error:", err));
         return;
       }
 
@@ -311,6 +318,7 @@ export function createBot(
 
   bot.on("callback_query:data", async (ctx) => {
     const data = ctx.callbackQuery.data;
+    console.log(`[cb] Callback received: ${data}`);
     const [decision, proposalId] = data.split(":");
     if (!proposalId || !["approve", "deny", "remember"].includes(decision)) {
       await ctx.answerCallbackQuery({ text: "Invalid action" });
@@ -337,7 +345,11 @@ export function createBot(
       };
       if (decision === "remember") resolution.remember = true;
 
-      await validance.resolveApproval(entry.approvalId, resolution);
+      // Fire-and-forget: resolveApproval blocks until worker finishes,
+      // so we must not await it or it blocks all other callback processing.
+      validance.resolveApproval(entry.approvalId, resolution).catch((err) => {
+        console.error("[bot] Error resolving approval:", err);
+      });
 
       const labels: Record<string, string> = {
         approve: "Approved!",
@@ -375,6 +387,7 @@ export function createBot(
   // --- Approval callback (invoked by webhook server) ---
 
   const onApprovalReady: OnApprovalReady = (proposalId, approvalId) => {
+    console.log(`[webhook] Approval ready: proposal=${proposalId}, approval=${approvalId}`);
     const entry = pendingProposals.get(proposalId);
     if (!entry) {
       console.warn(
@@ -439,6 +452,43 @@ export function createBot(
         handleProposalResult(bot, proposalId, result, catalog)
       )
       .catch((err) => handleProposalError(bot, proposalId, err));
+  }
+
+  /** Like submitProposal but returns a promise that resolves when the proposal completes. */
+  async function submitProposalAsync(
+    chatId: number,
+    messageId: number,
+    intent: PaymentIntent,
+    session: string
+  ): Promise<void> {
+    const proposalId = crypto.randomUUID();
+    const notifyUrl = `http://${webhookHost}:${webhookPort}/webhook?proposalId=${proposalId}`;
+
+    const request: ProposalRequest = {
+      action: intent.action,
+      parameters: intent.params,
+      session_hash: session,
+      notify_url: notifyUrl,
+    };
+
+    const promise = validance.submitProposal(request);
+
+    addPending(proposalId, {
+      chatId,
+      messageId,
+      promise,
+      approvalId: null,
+      action: intent.action,
+      params: intent.params,
+      createdAt: Date.now(),
+    });
+
+    try {
+      const result = await promise;
+      await handleProposalResult(bot, proposalId, result, catalog);
+    } catch (err) {
+      await handleProposalError(bot, proposalId, err);
+    }
   }
 
   return { bot, onApprovalReady };

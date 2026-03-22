@@ -59,6 +59,11 @@ async function main(): Promise<void> {
     console.log(`[ok] Webhook server listening on :${webhookPort}`);
   });
 
+  // Catch errors so stale callbacks don't crash the bot
+  bot.catch((err) => {
+    console.error(`[bot] Error:`, err.message ?? err);
+  });
+
   // Start bot (long polling)
   bot.start({
     onStart: (me) => {
