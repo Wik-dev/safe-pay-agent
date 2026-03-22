@@ -47,11 +47,11 @@ export class ValidanceClient {
     }
   }
 
-  /** Resolve a pending approval (approve or deny). */
+  /** Resolve a pending approval (approve or deny, optionally remember). */
   async resolveApproval(
     approvalId: string,
-    resolution: { decision: "approved" | "denied" }
-  ): Promise<{ status: string }> {
+    resolution: { decision: "approved" | "denied"; remember?: boolean }
+  ): Promise<{ status: string; learned_rule_id?: string }> {
     const res = await fetch(
       `${this.baseUrl}/api/approvals/${approvalId}/resolve`,
       {

@@ -282,12 +282,12 @@ export function createBot(
     }
   });
 
-  // --- Callback query handler (Approve/Deny buttons) ---
+  // --- Callback query handler (Approve/Deny/Remember buttons) ---
 
   bot.on("callback_query:data", async (ctx) => {
     const data = ctx.callbackQuery.data;
     const [decision, proposalId] = data.split(":");
-    if (!proposalId || (decision !== "approve" && decision !== "deny")) {
+    if (!proposalId || !["approve", "deny", "remember"].includes(decision)) {
       await ctx.answerCallbackQuery({ text: "Invalid action" });
       return;
     }
@@ -306,13 +306,20 @@ export function createBot(
     }
 
     try {
-      const resolution = decision === "approve" ? "approved" : "denied";
-      await validance.resolveApproval(entry.approvalId, {
-        decision: resolution,
-      });
-      await ctx.answerCallbackQuery({
-        text: decision === "approve" ? "Approved!" : "Denied",
-      });
+      const isApproval = decision === "approve" || decision === "remember";
+      const resolution: { decision: "approved" | "denied"; remember?: boolean } = {
+        decision: isApproval ? "approved" : "denied",
+      };
+      if (decision === "remember") resolution.remember = true;
+
+      await validance.resolveApproval(entry.approvalId, resolution);
+
+      const labels: Record<string, string> = {
+        approve: "Approved!",
+        remember: "Approved + rule created!",
+        deny: "Denied",
+      };
+      await ctx.answerCallbackQuery({ text: labels[decision] });
 
       if (decision === "deny") {
         await bot.api.editMessageText(
@@ -322,11 +329,13 @@ export function createBot(
         );
         pendingProposals.delete(proposalId);
       } else {
+        const suffix = decision === "remember"
+          ? "\n\n<i>Approved + remembered \u2014 executing...</i>"
+          : "\n\n<i>Approved \u2014 executing...</i>";
         await bot.api.editMessageText(
           entry.chatId,
           entry.messageId,
-          formatApprovalRequest(entry.action, entry.params, catalog) +
-            "\n\n<i>Approved \u2014 executing...</i>",
+          formatApprovalRequest(entry.action, entry.params, catalog) + suffix,
           { parse_mode: "HTML" }
         );
       }
@@ -353,8 +362,10 @@ export function createBot(
 
     // Show approval buttons
     const keyboard = new InlineKeyboard()
-      .text("Approve", `approve:${proposalId}`)
-      .text("Deny", `deny:${proposalId}`);
+      .text("\u2705 Approve", `approve:${proposalId}`)
+      .text("\ud83d\uddd1 Deny", `deny:${proposalId}`)
+      .row()
+      .text("\ud83e\udde0 Approve + Remember", `remember:${proposalId}`);
 
     const text = formatApprovalRequest(entry.action, entry.params, catalog);
 
