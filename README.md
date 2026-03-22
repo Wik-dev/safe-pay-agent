@@ -60,6 +60,41 @@ cd telegram-bot && npx tsx --env-file=.env tests/test_e2e.ts
 # 24 tests: keyword filter, Claude extraction, deploy+approve, deny flow
 ```
 
+## Features Beyond Basic Escrow
+
+### Conversational AI
+- **Chat history** — per-chat memory so Claude understands follow-ups ("release the coffee escrow" without re-specifying the address)
+- **Markdown rendering** — Claude's responses render properly in Telegram (bold, code, italic)
+- **Smart pre-filter** — keyword detection skips the Claude API call for irrelevant messages, saving latency and cost
+
+### Multi-Action Support
+- **Parallel tool calls** — "make 3 payments" produces 3 separate approval messages, each with independent Approve/Deny buttons
+- Single-action and conversational flows work exactly as before
+
+### Learned Policies
+- **Approve + Remember** — a third button on every approval prompt that creates a learned policy rule
+- Future matching proposals auto-approve based on learned rules — the engine learns your trust preferences
+- `/policies` to inspect, `/reset_policies` to clear
+
+### Validance Introspection Commands
+Direct read-only queries to the safety engine — no AI involved:
+
+| Command | What it shows |
+|---------|--------------|
+| `/status` | Engine health, database, loaded catalog |
+| `/audit` | Tamper-evident audit trail (hashes, timestamps) |
+| `/catalog` | Available actions, approval tiers, rate limits |
+| `/policies` | Learned policy rules |
+| `/reset_policies` | Clear all learned rules |
+| `/contracts` | Active escrow contracts |
+
+### Balance Check
+- `ton_balance` action with optional address — omit to check the bot's own wallet
+
+### Catalog-Driven Architecture
+- Tools, keywords, system prompt, display formatting — all generated from `catalog/ton-payments.json`
+- Adding a new action = one JSON entry + one worker script, zero bot code changes
+
 ## Tech Stack
 
 Tact + Blueprint (smart contract) · Grammy (Telegram bot) · Claude Sonnet (intent extraction) · Validance (validated execution engine) · TON testnet
