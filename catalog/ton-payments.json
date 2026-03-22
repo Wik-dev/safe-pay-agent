@@ -93,16 +93,16 @@
       }
     },
     "ton_balance": {
-      "description": "Check the TON balance of an address. Returns the current balance and contract state.",
+      "description": "Check the TON balance of an address. If no address is provided, checks the bot's own wallet balance.",
       "persistent": false,
       "docker_image": "ton-worker",
       "command_template": "node /app/dist/ton_balance.js",
       "parameter_schema": {
         "type": "object",
         "properties": {
-          "address": {"type": "string", "description": "TON address to check balance for"}
+          "address": {"type": "string", "description": "TON address to check balance for. Omit to check the bot's own wallet."}
         },
-        "required": ["address"]
+        "required": []
       },
       "approval_tier": "auto-approve",
       "timeout": 30,

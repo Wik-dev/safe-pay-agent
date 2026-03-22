@@ -1,12 +1,15 @@
 import { Address, fromNano } from '@ton/core';
 import { createClient } from './lib/client';
+import { getWallet } from './lib/wallet';
 
 async function main() {
     const params = JSON.parse(process.env.VALIDANCE_PARAMS || '{}');
-    const { address } = params;
+    let { address } = params;
 
+    // Default to the bot's own wallet address
     if (!address) {
-        throw new Error('Missing required param: address');
+        const { wallet } = await getWallet();
+        address = wallet.address.toString({ bounceable: true, testOnly: true });
     }
 
     const client = createClient();
