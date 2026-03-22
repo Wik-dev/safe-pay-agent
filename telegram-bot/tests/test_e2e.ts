@@ -114,8 +114,9 @@ async function testKeywordPreFilter(): Promise<void> {
 async function testIntentExtraction(): Promise<void> {
   console.log("\n--- Intent Extraction (Claude) ---");
 
-  // Escrow intent
+  // Escrow intent (chatId=0 for tests)
   const escrow = await extractIntent(
+    0,
     `Send 0.05 TON to ${TEST_ADDRESS} for hackathon demo`,
     []
   );
@@ -139,7 +140,7 @@ async function testIntentExtraction(): Promise<void> {
     },
     createdAt: Date.now(),
   };
-  const release = await extractIntent("Release the coffee escrow", [fakeResult]);
+  const release = await extractIntent(0, "Release the coffee escrow", [fakeResult]);
   assert(release.type === "tool_call", "release message → tool_call");
   if (release.type === "tool_call") {
     assert(release.action === "ton_release", `action = ton_release (got ${release.action})`);
@@ -150,7 +151,7 @@ async function testIntentExtraction(): Promise<void> {
   }
 
   // Conversational (no tool call)
-  const chat = await extractIntent("What can you do?", []);
+  const chat = await extractIntent(0, "What can you do?", []);
   assert(chat.type === "text", "conversational message → text response");
 }
 

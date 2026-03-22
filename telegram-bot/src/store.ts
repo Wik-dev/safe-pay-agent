@@ -33,12 +33,19 @@ export interface ResultRecord {
   createdAt: number;
 }
 
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
 const MAX_PENDING = 50;
 const MAX_AGE_MS = 10 * 60 * 1000; // 10 minutes
+const MAX_HISTORY = 20; // message pairs cap
 
 // Global maps (survive module reloads in dev)
 const PENDING_KEY = "__safepay_pending__";
 const RESULTS_KEY = "__safepay_results__";
+const HISTORY_KEY = "__safepay_history__";
 
 function getGlobal<T>(key: string, factory: () => T): T {
   const g = globalThis as Record<string, unknown>;
@@ -53,6 +60,11 @@ export const pendingProposals = getGlobal<Map<string, PendingEntry>>(
 
 export const resultsByChat = getGlobal<Map<number, ResultRecord[]>>(
   RESULTS_KEY,
+  () => new Map()
+);
+
+export const chatHistories = getGlobal<Map<number, ChatMessage[]>>(
+  HISTORY_KEY,
   () => new Map()
 );
 
@@ -152,4 +164,28 @@ function findIdField(output: Record<string, unknown>): string | null {
     if (output[field] !== undefined) return field;
   }
   return null;
+}
+
+/** Append a message to chat history. */
+export function addChatMessage(
+  chatId: number,
+  role: "user" | "assistant",
+  content: string
+): void {
+  const history = chatHistories.get(chatId) ?? [];
+  history.push({ role, content });
+  // Trim oldest messages if over cap
+  while (history.length > MAX_HISTORY) {
+    history.shift();
+  }
+  // Ensure history starts with a user message (API requirement)
+  while (history.length > 0 && history[0].role !== "user") {
+    history.shift();
+  }
+  chatHistories.set(chatId, history);
+}
+
+/** Get chat history for a chat. */
+export function getChatHistory(chatId: number): ChatMessage[] {
+  return chatHistories.get(chatId) ?? [];
 }

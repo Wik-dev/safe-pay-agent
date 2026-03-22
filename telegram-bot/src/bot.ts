@@ -5,7 +5,7 @@
 import { Bot, InlineKeyboard } from "grammy";
 import crypto from "node:crypto";
 import type { Catalog } from "./catalog.js";
-import { extractIntent, hasPaymentSignals } from "./ai.js";
+import { extractIntent, hasPaymentSignals, recordToolResult } from "./ai.js";
 import { ValidanceClient, type ProposalRequest } from "./validance.js";
 import {
   addResult,
@@ -100,7 +100,7 @@ export function createBot(
 
     try {
       const activeResults = getActiveResults(chatId, catalog);
-      const intent = await extractIntent(text, activeResults);
+      const intent = await extractIntent(chatId, text, activeResults);
 
       if (intent.type === "text") {
         await bot.api.editMessageText(
@@ -263,16 +263,25 @@ async function handleProposalResult(
       parse_mode: "HTML",
     });
 
-    // Generic result tracking
+    // Generic result tracking + chat history
     if (result.status === "completed" && result.result?.output) {
       try {
         const output = JSON.parse(result.result.output);
         if (!output.error && output.status !== "failed") {
           addResult(entry.chatId, entry.action, output);
+          recordToolResult(
+            entry.chatId,
+            entry.action,
+            catalog.formatSummary(entry.action, output)
+          );
         }
       } catch {
         // Non-JSON output, skip result tracking
       }
+    } else if (result.status === "denied") {
+      recordToolResult(entry.chatId, entry.action, "Action was denied by user.");
+    } else if (result.status === "failed") {
+      recordToolResult(entry.chatId, entry.action, `Failed: ${result.result?.error ?? result.reason ?? "unknown error"}`);
     }
   } catch (err) {
     console.error("[bot] Failed to update message with result:", err);
