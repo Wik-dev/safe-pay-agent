@@ -197,6 +197,31 @@ export function createBot(
     }
   });
 
+  bot.command("reset_policies", async (ctx) => {
+    try {
+      const session = sessionHash(ctx.chat.id);
+      const policies = await validance.getPolicies(session);
+
+      if (policies.rules.length === 0) {
+        await ctx.reply("No learned policies to reset.");
+        return;
+      }
+
+      let deleted = 0;
+      for (const rule of policies.rules) {
+        await validance.deletePolicy(rule.rule_id);
+        deleted++;
+      }
+
+      await ctx.reply(
+        `\ud83d\udee1\ufe0f Cleared ${deleted} learned policy rule${deleted > 1 ? "s" : ""}.`,
+        { parse_mode: "HTML" }
+      );
+    } catch {
+      await ctx.reply("\u26a0\ufe0f Validance engine not reachable");
+    }
+  });
+
   bot.command("catalog", async (ctx) => {
     const lines = catalog.actions.map((name) => {
       const tpl = catalog.template(name)!;

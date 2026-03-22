@@ -111,6 +111,14 @@ export class ValidanceClient {
     if (!res.ok) throw new Error(`Policies query failed: ${res.status}`);
     return (await res.json()) as PoliciesResponse;
   }
+  /** Delete a learned policy rule. */
+  async deletePolicy(ruleId: string): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/api/policies/${ruleId}`, {
+      method: "DELETE",
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) throw new Error(`Delete policy failed: ${res.status}`);
+  }
 }
 
 export interface HealthResponse {
